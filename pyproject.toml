@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "betty-pet"
+version = "0.1.0"
+description = "A customizable Python desktop pet"
+requires-python = ">=3.10"
+dependencies = ["Pillow>=10.0"]
+
+[project.optional-dependencies]
+image-tools = ["numpy>=1.24", "opencv-python>=4.8"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+betty-pet = "betty_pet.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

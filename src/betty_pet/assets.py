@@ -1,0 +1,62 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from PIL import Image
+
+
+DEFAULT_MANIFEST: dict[str, list[str]] = {
+    "idle": ["stand.png", "stand-1.png", "stand-2.png", "stand-3.png"],
+    "click": ["click.png"], "wave": ["hello.png"], "sleep": ["sleep.png"],
+    "happy": ["Eat_enough.png"], "sit": ["sit.png"], "climb": ["climb.png", "climb-1.png"],
+    "walk_left": ["walk-left.png", "walk-left-1.png", "walk-left-2.png", "walk-left-3.png", "walk-left-4.png"],
+    "walk_right": ["walk-right.png", "walk-right-1.png", "walk-right-2.png"],
+    "wipe_mouth": ["wipe mouth.png"],
+}
+
+
+class AssetCatalog:
+    """Loads animation frames from a manifest without coupling assets to the UI."""
+
+    def __init__(self, asset_dir: Path, manifest_path: Path | None = None) -> None:
+        self.asset_dir = Path(asset_dir)
+        self.manifest_path = manifest_path or self.asset_dir / "manifest.json"
+        self.manifest = self._read_manifest()
+
+    def _read_manifest(self) -> dict[str, list[str]]:
+        if not self.manifest_path.is_file():
+            return DEFAULT_MANIFEST.copy()
+        with self.manifest_path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            raise ValueError("manifest must contain an object")
+        return {str(key): [str(item) for item in value] for key, value in data.items()}
+
+    def actions(self) -> tuple[str, ...]:
+        return tuple(self.manifest)
+
+    def paths_for(self, action: str) -> list[Path]:
+        names = self.manifest.get(action) or self.manifest.get("idle", [])
+        existing = [self.asset_dir / name for name in names if (self.asset_dir / name).is_file()]
+        if not existing:
+            raise FileNotFoundError(f"No frames found for action '{action}' in {self.asset_dir}")
+        return existing
+
+    def load_frames(self, action: str, size: tuple[int, int]) -> list[Image.Image]:
+        frames: list[Image.Image] = []
+        for path in self.paths_for(action):
+            with Image.open(path) as image:
+                resized = image.convert("RGBA").resize(size, Image.Resampling.LANCZOS)
+                frames.append(self._remove_color_key_halo(resized))
+        return frames
+
+    @staticmethod
+    def _remove_color_key_halo(image: Image.Image) -> Image.Image:
+        """Make alpha edges binary so Windows' magenta color key cannot bleed through."""
+        alpha = image.getchannel("A").point(lambda value: 255 if value >= 160 else 0)
+        image.putalpha(alpha)
+        return image
+
+    def missing_files(self) -> list[Path]:
+        return [self.asset_dir / name for names in self.manifest.values() for name in names if not (self.asset_dir / name).is_file()]

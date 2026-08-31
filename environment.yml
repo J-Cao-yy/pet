@@ -1,0 +1,12 @@
+name: pic
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pillow>=10
+  - numpy>=1.24
+  - opencv
+  - pip
+  - pip:
+      - -e .
+
