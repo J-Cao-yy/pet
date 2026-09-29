@@ -29,9 +29,13 @@ Betty Pet 是一个运行在 Windows 桌面的轻量级 2D 桌宠原型。它的
 | 物理运动 | 重力、终端速度、空气阻力、地面摩擦、阻尼反弹、拖拽投掷 | `src/betty_pet/physics.py` |
 | 追鼠标 | 死区防抖，朝光标行走，开关写入存档 | `physics.py`、`movement.py`、`window.py` |
 | 悬停反应 | 停留 0.8 秒触发挥手 | `window.py`、`config.py` |
+| 窗口栖息 | 站到前台窗口上沿；随窗口移动/缩放跟随；窗口关闭、最小化或顶到屏幕顶部即掉落回地面 | `desktop.py`、`window.py` |
+| 音效 | `SoundPlayer` 抽象 + 默认静音实现；事件键位、菜单开关、CLI 覆盖就位，**尚未接播放后端** | `src/betty_pet/audio.py` |
+| 系统托盘 | pywin32 自绘图标（零新依赖）；显示/隐藏、跟随鼠标、退出；动作经队列回投主线程 | `src/betty_pet/tray.py` |
+| 开机自启 | `--install-autostart` / `--uninstall-autostart` 写入「启动」文件夹的 `.vbs`（无窗口启动） | `src/betty_pet/autostart.py`、`__main__.py` |
 
-边界仍然清楚：**没有道具数量与货币、没有多角色/皮肤、没有音效、没有托盘和开机自启、没有窗口
-栖息与沿墙攀爬、没有多实例、没有本地模型对话。** 同类项目的横向对比与借鉴顺序见
+边界仍然清楚：**音效只有抽象层、没有播放后端；没有道具数量与货币；没有多角色/皮肤；没有沿墙与天花板
+攀爬；没有多实例；没有本地模型对话。** 同类项目的横向对比与借鉴顺序见
 [现有桌宠项目调研](EXTERNAL_REFERENCES.md)。
 
 ## 3. 建议的目标架构
@@ -156,6 +160,17 @@ class StateStore(Protocol):
 - `PetWindow.cancel_motion()` 会取消当前移动定时器；点击触发其他动作、关闭窗口或新行走动作时都应调用它，避免旧回调继续修改窗口位置。
 - 当前“墙壁”仅指主屏幕左右边界，尚未处理多显示器、任务栏工作区、屏幕顶部/底部和其他窗口碰撞。
 - 位置移动仍依赖 Tkinter 的 `after()`，移动回调必须在 Tk 主线程执行；后续耗时寻路或窗口扫描不能直接放进该回调。
+- `desktop.py` 只报**前台窗口**，并且默认用当前进程号把自己的窗口排除掉：用户点宠物时宠物就是前台窗口，不排除就会"栖息在自己身上"。别再改成"枚举全部窗口"——那会让宠物爬到它够不着的对话框和 tooltip 上。
+- 栖息**不是新的物理**：`_active_bounds()` 把窗口上沿折算成一个临时 `Bounds`（地面=窗口上沿、左右=窗口左右边）喂给原来的 `step()`。沿窗口行走、掉落回地面全是既有逻辑，不要为此改 `physics.py`。
+- **最大化的窗口会被拒绝栖息**：它的上沿在屏幕最顶端，宠物没地方站。宁可拒绝，也不要让宠物盖住窗口标题栏和关闭按钮。
+- 窗口轮询（`_probe_windows`，默认 500ms）只在栖息面**真的变了**时才唤醒物理循环（靠 `_perch_surface` 比对）。否则宠物静止时会每 500ms 被唤醒一次空转。
+- 抓取宠物（拖拽超过 3px）才脱离窗口，**单击不会**——否则点一下宠物就掉下去。
+- `audio.py` 的音效键是**封闭集合**（`SOUND_KEYS`），键名是语义而非文件名。加音效＝加一个键 + 一个调用点；后端只要实现 `SoundPlayer.play(key)`，不要改调用点。
+- 音效默认**关闭**，开关存在 `settings.sound`；CLI 的 `--sound` / `--no-sound` 显式覆盖存档（`AppConfig.sound_enabled=None` 表示"没意见，听存档的"）。
+- `tray.py` 的 win32 部分**只能在托盘线程里跑**（`PumpMessages` 阻塞，而 Tk 占着主线程）。托盘动作一律 `put` 进 `TrayIcon.actions`，由主线程的 `_drain_tray` 消费——Tkinter 不是线程安全的，托盘线程里绝不能直接碰 UI。
+- 托盘、栖息、pywin32 都**允许不存在**，分别降级为 `NullTray` / `NullWindowProbe` / 直接可用。新增平台相关能力时保持这个模式，别让"没有托盘"变成"启动不了"。
+- 没有托盘时 `hide_pet()` 会**拒绝隐藏并说明原因**，否则宠物会藏到一个回不来的地方。
+- `autostart.py` 是唯一会写项目目录之外的模块，且**只在显式命令下执行**（`--install-autostart` / `--uninstall-autostart`），写的是「启动」文件夹里的 `.vbs`（可见、可单独删除）。不要在启动流程里自动调用它。
 
 ## 9. 后续会话交接记录
 
@@ -183,7 +198,7 @@ class StateStore(Protocol):
 - 新增 `docs/EXTERNAL_REFERENCES.md`：同类项目调研、能力矩阵与分批借鉴顺序。
 - 测试现为 45 项（新增 `test_physics.py`），`pytest` 与 `ruff check src tests main.py` 通过；另做过一次 Tk 冒烟，覆盖出生位置 / 悬停挥手 / 拖拽 / 投掷 / 落地 / 甩飞 / 追鼠标 / 撞墙爬 / 状态面板 / 喂食冷却。
 
-**已完成（当前会话：养成闭环）**
+**已完成（历史：养成闭环）**
 
 - 新增 `src/betty_pet/items.py`：`Item`、`ItemOutcome`、`apply_item()`、`default_items()`、`items_by_group()`。6 件道具分喂食 / 玩耍 / 休息三组，菜单由表自动生成。
 - **新增"拒绝"这一层**：吃饱（`full_at`）、当日上限（`daily_limit`）、冷却未到，三种拒绝各有台词且不消耗次数。这是让宠物从"按钮面板"变成"有身体的角色"的关键。
@@ -193,28 +208,39 @@ class StateStore(Protocol):
 - **删除已过时的抽象**：`RecoveryMethod` / `RecoveryResult` / `StatRecovery` / `default_recoveries()` 被 `Item` + `apply_item()` 完全取代，已从 `state.py` 与 `__init__` 导出中移除，相关测试迁移到 `tests/test_items.py`。
 - 测试现为 65 项（新增 `test_items.py`，扩充 `test_state.py` / `test_store.py`），`pytest` 与 `ruff` 通过；另做过一次 Tk 冒烟，覆盖子菜单生成、配额标签刷新、喂食、冷却拦截、吃饱拒绝、上限拒绝、升级播报、状态面板、事件落库。
 
+**已完成（当前会话：窗口栖息 / 托盘 / 音效骨架）**
+
+- 新增 `src/betty_pet/desktop.py`：`WindowRect`、`WindowProbe` 协议、`NullWindowProbe`、`Win32WindowProbe`、`make_probe()`、`perch_bounds()`。只报**前台窗口**，并按进程号排除自己。
+- **窗口栖息**：菜单「跳到窗口」把宠物放到前台窗口上沿，「离开窗口」让它掉回地面；窗口移动/缩放会跟随，关闭、最小化或顶到屏幕顶端会自动脱离并掉落。实现方式是**换 `Bounds`，不动物理**。
+- 新增 `src/betty_pet/audio.py`：`SoundPlayer` 协议 + `SilentPlayer`（只记录不发声）+ 语义键 `SOUND_KEYS` + `sound_for_group()`。菜单与 CLI 都有开关，**播放后端刻意留空**。
+- 新增 `src/betty_pet/tray.py`：pywin32 自绘托盘（零新依赖）——显示/隐藏、跟随鼠标、退出；动作经 `queue` 回投主线程；无 pywin32 时降级为 `NullTray`。
+- 新增 `src/betty_pet/autostart.py` 与 `--install-autostart` / `--uninstall-autostart` / `--autostart-status`：写「启动」文件夹里的 `.vbs`（`pythonw` 无黑框启动）。**只提供命令，未实际写入**。
+- `config.py` 新增 `perch_poll_ms` / `tray_poll_ms` / `sound_enabled`；`--sound` / `--no-sound` 覆盖存档。
+- 测试 65 → 99 项（新增 `test_desktop.py` / `test_audio.py` / `test_tray.py` / `test_autostart.py`）。另做过一次 Tk 冒烟，覆盖：栖息到窗口上沿（y=172）、状态面板显示「窗口上」、窗口下移后跟随（y=372）、窗口消失后掉落回地面（y=904）、离开窗口、静止时物理循环不空转、喂食/拒绝音效键、托盘队列翻转跟随鼠标、无托盘时拒绝隐藏、隐藏/恢复往返。
+
 **尚未完成**
 
 - `LanguageProvider` 目前只有模板实现，尚未接入 Ollama/llama.cpp 等本地模型。
 - 道具没有数量、没有货币、没有解锁条件。刻意如此：没有"打工赚钱→买道具"的循环时，数量只会变成一个再也回不来的数字，读起来像 bug 而不是机制。
 - 好感度只由道具驱动，还没有别的来源（抚摸、点击、长时间陪伴）。
-- 没有音效、多角色皮肤。
-- 没有窗口栖息、沿墙与天花板攀爬、多实例。
-- 没有托盘与开机自启。
+- **音效只有抽象层与静音实现**：开关打开也没有声音——缺播放后端，也缺音频素材（`assets/` 里一个音频文件都没有，manifest 也没有音频段）。
+- 托盘用的是系统默认图标，没有自己的 `.ico`；托盘菜单里还没有「跳到窗口」这类入口。
+- 栖息只认主屏幕边界，且拒绝最大化窗口；多显示器未处理。开机自启的命令写好了但**没执行过**，真机开机验证待做。
+- 没有多角色皮肤、沿墙与天花板攀爬、多实例。
 - 碰撞边界只有主屏幕上下左右；任务栏高度靠 `floor_offset_px` 假设，多显示器未处理。
 - 物理动词缺专属素材（`fall` / `thrown` / `dragged` 三张 PNG），目前走回退链。
 - `png_process.py` 有一个既有的 ruff 报警（`PIL.Image` 未使用），与代码改动无关，未处理。
 
 **推荐下一步**
 
-批次二已完成，接下来按 `docs/EXTERNAL_REFERENCES.md` 的批次三走。三件事里推荐先做**音效层**，
-因为它最省事、感知提升最直接：定义一个 `SoundPlayer` 抽象（默认静音实现 + `winsound`/`playsound`
-实现），把事件映射到音效文件，菜单加开关。加它不会动到任何现有结构。
+批次三还剩**沿墙与天花板攀爬**和**多实例**，两者都是结构性改动，动手前先补设计：
 
-**窗口栖息**（跳到前台窗口标题栏）需要枚举其它窗口，Windows 专属（`win32gui`），必须准备
-非 Windows 的降级路径，并想清楚"窗口关掉了宠物怎么办"。
+- **攀爬**要先给 `Bounds` / `MotionState` 增加"依附面"概念——现在 `grounded` 只有"贴地"一个含义，
+  而 Shimeji 的动作表里沿墙、沿天花板是与地面并列的状态。这次栖息已经证明"换 `Bounds`、不动物理"
+  这条路可行，攀爬可以照这个思路往四向扩展。
+- **多实例**要先回答两个问题：一份状态还是多份状态、存档怎么区分。建议先出设计文档再动代码。
 
-**沿墙与天花板攀爬**要先给 `Bounds` 增加"依附面"概念——当前 `MotionState.grounded` 只有"贴地"
-一个含义，Shimeji 的动作表里沿墙、沿天花板是并列的四种状态。这一步是结构性改动，动手前先补设计。
+音效要真正响起来，最省事的顺序是：先有音频素材（或允许我用程序合成占位音），再挂后端。
+目前**素材比后端更卡脖子**。
 
 `LanguageProvider` 与 `StateStore` 两个接口都已就位，接模型时不要改窗口类。
