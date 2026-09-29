@@ -21,6 +21,14 @@ ACTION_FALLBACKS: dict[str, tuple[str, ...]] = {
     "thrown": ("thrown", "click", "idle"),
     "dragged": ("dragged", "climb", "idle"),
     "chase_mouse": ("chase_mouse", "walk_left", "idle"),
+    # Climbing (see docs/CLIMBING_DESIGN.md). There is no climb-wall or
+    # ceiling-walk art yet, and the design deliberately ships the behaviour
+    # first: these chains keep the pet animated with an existing frame instead
+    # of freezing. Drop the real PNGs in and register them in the manifest and
+    # the fallbacks simply stop being used.
+    "climb_wall_left": ("climb_wall_left", "climb", "walk_left", "idle"),
+    "climb_wall_right": ("climb_wall_right", "climb", "walk_right", "idle"),
+    "walk_ceiling": ("walk_ceiling", "walk_left", "idle"),
 }
 
 

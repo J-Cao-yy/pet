@@ -8,6 +8,12 @@ lists exactly those three as mandatory alongside mouse chasing: ``Fall``,
 
 Units are pixels and seconds. The caller drives :func:`step` at a fixed
 timestep and moves the window to the returned position.
+
+Standing and clinging are *not* the same physics. On the floor gravity presses
+the pet into the surface; on a ceiling or a wall gravity pulls it away and only
+its grip holds it there. So a clinging pet (:class:`Surface`) gets no gravity
+and is pinned to the surface by a zero-thickness :class:`Bounds` rather than by
+a rotation of the coordinate system. See docs/CLIMBING_DESIGN.md.
 """
 
 from __future__ import annotations
@@ -15,6 +21,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from dataclasses import dataclass, replace
+from enum import Enum
 
 __all__ = [
     "Bounds",
@@ -22,11 +29,43 @@ __all__ = [
     "MotionEvents",
     "MotionState",
     "PhysicsConfig",
+    "Surface",
+    "attach",
     "bounds_for",
     "clamp_to_bounds",
     "clamp_speed",
+    "detach",
     "step",
+    "surface_bounds",
 ]
+
+
+class Surface(str, Enum):
+    """The surface the pet is currently held by.
+
+    ``FLOOR`` is the default and the only one where gravity is helpful: it
+    presses the pet onto the surface. Everywhere else gravity pulls the pet
+    *off* the surface, so a clinging pet gets no gravity at all - what keeps it
+    there is its grip, not the physics.
+    """
+
+    FLOOR = "floor"
+    CEILING = "ceiling"
+    WALL_LEFT = "wall_left"
+    WALL_RIGHT = "wall_right"
+
+    def __str__(self) -> str:
+        return self.value
+
+    @property
+    def clinging(self) -> bool:
+        """True when the pet is holding on rather than standing on something."""
+        return self is not Surface.FLOOR
+
+    @property
+    def along(self) -> str:
+        """Axis the pet travels along the surface: ``"x"`` or ``"y"``."""
+        return "y" if self in (Surface.WALL_LEFT, Surface.WALL_RIGHT) else "x"
 
 
 @dataclass(frozen=True)
@@ -71,6 +110,7 @@ class MotionState:
     vy: float = 0.0
     grounded: bool = True
     airborne_time: float = 0.0
+    surface: Surface = Surface.FLOOR
 
     def settled(self) -> bool:
         """True when nothing more will happen without external input."""
@@ -133,6 +173,43 @@ def clamp_speed(vx: float, vy: float, limit: float) -> tuple[float, float]:
     return vx * scale, vy * scale
 
 
+def surface_bounds(area: Bounds, surface: Surface) -> Bounds:
+    """Collapse ``area`` onto ``surface`` so a clinging pet is pinned to it.
+
+    No new motion code is needed to hold a pet against a surface: :func:`step`
+    already snaps a state onto ``bounds.bottom`` and refuses to let it out of
+    the rectangle. Making the rectangle zero-thickness turns that into "pinned
+    to a line, free to slide along it":
+
+    * ceiling  -> zero height (pin ``y``)
+    * walls    -> zero width  (pin ``x``)
+
+    ``FLOOR`` is returned untouched - standing is what ``area`` already means.
+    """
+    if surface is Surface.CEILING:
+        return replace(area, bottom=area.top)
+    if surface is Surface.WALL_LEFT:
+        return replace(area, right=area.left)
+    if surface is Surface.WALL_RIGHT:
+        return replace(area, left=area.right)
+    return area
+
+
+def attach(state: MotionState, surface: Surface) -> MotionState:
+    """Cling to ``surface``: stop dead and hand the geometry to the caller.
+
+    Both velocities are dropped because grabbing a surface is a new grip, not a
+    continuation of whatever the pet was doing. ``grounded`` is set so the first
+    :func:`step` does not report a spurious landing.
+    """
+    return replace(state, vx=0.0, vy=0.0, grounded=True, surface=surface)
+
+
+def detach(state: MotionState) -> MotionState:
+    """Let go: normal gravity takes over again."""
+    return replace(state, grounded=False, surface=Surface.FLOOR, airborne_time=0.0)
+
+
 def step(
     state: MotionState,
     dt: float,
@@ -140,14 +217,22 @@ def step(
     config: PhysicsConfig,
     *,
     drive_vx: float | None = None,
+    drive_vy: float | None = None,
 ) -> tuple[MotionState, MotionEvents]:
     """Advance the motion model by ``dt`` seconds.
 
-    ``drive_vx`` is how walking is expressed: when given, horizontal velocity is
-    set to it directly (a controller), otherwise velocity decays on its own.
+    ``drive_vx`` / ``drive_vy`` are how walking and climbing are expressed: when
+    given, that axis' velocity is set to it directly (a controller), otherwise
+    it decays on its own. ``drive_vy`` is what lets a pet climb *up* a wall -
+    on the floor it is normally left as ``None`` and gravity owns the axis.
+
+    A clinging state (``state.surface``) is held by the surface instead of by
+    gravity, so gravity is skipped and the pet counts as supported.
     """
     if dt <= 0:
         return state, MotionEvents()
+
+    clinging = state.surface.clinging
 
     vx, vy = state.vx, state.vy
     if drive_vx is not None:
@@ -157,7 +242,13 @@ def step(
     else:
         vx *= max(0.0, 1.0 - config.air_drag * dt)
 
-    if not state.grounded:
+    if drive_vy is not None:
+        vy = drive_vy
+    elif clinging:
+        # Gripping a surface is friction, not free fall: letting go of the
+        # controls stops the pet where it is instead of dropping it.
+        vy *= max(0.0, 1.0 - config.ground_friction * dt)
+    elif not state.grounded:
         vy = min(state.vy + config.gravity * dt, config.terminal_velocity)
 
     x = state.x + vx * dt
@@ -185,14 +276,29 @@ def step(
         else:
             vy = 0.0
 
-    grounded = y >= bounds.bottom - 0.05 and vy >= 0.0
-    if grounded:
-        y = bounds.bottom
+    if clinging:
+        # The surface's degenerate bounds already pin the pet; do *not* snap it
+        # onto ``bottom`` here, or a pet halfway up a wall would teleport to the
+        # floor. It is supported by definition, which also stops the physics
+        # loop from spinning while it just hangs there.
+        grounded = True
+    else:
+        grounded = y >= bounds.bottom - 0.05 and vy >= 0.0
+        if grounded:
+            y = bounds.bottom
     landed = grounded and not state.grounded
     airborne_time = 0.0 if grounded else state.airborne_time + dt
 
     return (
-        MotionState(x=x, y=y, vx=vx, vy=vy, grounded=grounded, airborne_time=airborne_time),
+        MotionState(
+            x=x,
+            y=y,
+            vx=vx,
+            vy=vy,
+            grounded=grounded,
+            airborne_time=airborne_time,
+            surface=state.surface,
+        ),
         MotionEvents(
             landed=landed,
             bounced=bounced,

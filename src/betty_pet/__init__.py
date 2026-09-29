@@ -28,9 +28,13 @@ from .physics import (
     MotionEvents,
     MotionState,
     PhysicsConfig,
+    Surface,
+    attach,
     bounds_for,
     clamp_speed,
     clamp_to_bounds,
+    detach,
+    surface_bounds,
 )
 from .scheduler import Clock, Job, ManualClock, Scheduler, TkClock
 from .state import (
@@ -82,9 +86,13 @@ __all__ = [
     "MotionEvents",
     "MotionState",
     "PhysicsConfig",
+    "Surface",
+    "attach",
     "bounds_for",
     "clamp_speed",
     "clamp_to_bounds",
+    "detach",
+    "surface_bounds",
     "Clock",
     "Job",
     "ManualClock",
