@@ -26,6 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--check-assets", action="store_true", help="检查素材后退出")
     parser.add_argument("--db", help="SQLite 存档路径，默认 ~/.betty_pet/state.db")
     parser.add_argument("--no-persist", action="store_true", help="本次运行不读写存档")
+    parser.add_argument("--focus", action="store_true", help="启动后立刻开始一次专注")
+    parser.add_argument("--focus-minutes", type=int, help="专注时长（分钟），默认 25")
     parser.add_argument("--status", action="store_true", help="打印存档状态与最近事件后退出")
     parser.add_argument("--autostart-status", action="store_true", help="显示开机自启状态后退出")
     parser.add_argument("--install-autostart", action="store_true", help="安装开机自启（写入「启动」文件夹）")
@@ -49,6 +51,10 @@ def main(argv: list[str] | None = None) -> int:
     config.scale = config.clamp_scale(args.scale)
     config.random_actions = not args.no_random
     config.sound_enabled = args.sound_enabled
+    if args.focus_minutes is not None:
+        if args.focus_minutes < 1:
+            raise SystemExit("--focus-minutes 至少为 1")
+        config.focus_minutes = args.focus_minutes
 
     catalog = AssetCatalog(config.asset_dir)
     missing = catalog.missing_files()
@@ -66,7 +72,10 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         raise FileNotFoundError("Missing assets:\n" + "\n".join(str(path) for path in missing))
     root = tk.Tk()
-    PetWindow(root, config)
+    window = PetWindow(root, config)
+    if args.focus:
+        # Deferred so the first frame is drawn before the pet sits down.
+        root.after(0, window.start_focus)
     root.mainloop()
     return 0
 

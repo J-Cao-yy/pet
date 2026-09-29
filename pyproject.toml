@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "betty-pet"
-version = "0.5.0"
+version = "0.6.0"
 description = "A customizable Python desktop pet"
 requires-python = ">=3.10"
 dependencies = ["Pillow>=10.0"]

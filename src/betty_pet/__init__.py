@@ -1,6 +1,6 @@
 """Betty Pet: a customizable desktop pet built with Python and Tkinter."""
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 from .audio import SOUND_KEYS, SilentPlayer, SoundPlayer
 from .behavior import (
     BehaviorAction,
@@ -19,6 +19,7 @@ from .desktop import (
     make_probe,
     perch_bounds,
 )
+from .focus import BREAK, FOCUS, IDLE, FocusTimer, format_mmss
 from .items import Item, ItemOutcome, apply_item, default_items, items_by_group
 from .movement import Direction, MovementPlan, MovementPlanner, chase_direction, horizontal_target
 from .physics import (
@@ -61,6 +62,11 @@ __all__ = [
     "Win32WindowProbe",
     "make_probe",
     "perch_bounds",
+    "BREAK",
+    "FOCUS",
+    "IDLE",
+    "FocusTimer",
+    "format_mmss",
     "Item",
     "ItemOutcome",
     "apply_item",

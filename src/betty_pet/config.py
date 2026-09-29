@@ -42,6 +42,10 @@ class AppConfig:
     # ``None`` means "no opinion": the stored setting wins. ``--sound`` /
     # ``--no-sound`` set it explicitly and override the save file for one run.
     sound_enabled: bool | None = None
+    focus_minutes: int = 25
+    focus_break_minutes: int = 5
+    focus_poll_ms: int = 1_000
+    focus_affection: float = 3.0
 
     def clamp_scale(self, value: float) -> float:
         return max(self.min_scale, min(self.max_scale, round(value, 2)))

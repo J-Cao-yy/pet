@@ -20,6 +20,7 @@ from .behavior import (
 )
 from .config import AppConfig
 from .desktop import WindowProbe, WindowRect, make_probe, perch_bounds
+from .focus import FOCUS, FocusTimer, format_mmss
 from .items import GROUP_LABELS, Item, ItemOutcome, apply_item, default_items, items_by_group
 from .model import PetModel
 from .movement import MovementPlan, MovementPlanner, chase_direction, horizontal_target
@@ -38,6 +39,7 @@ from .store import MemoryStateStore, SQLiteStateStore
 from .tray import NullTray, TrayAction, make_tray
 
 IDLE = "idle"
+SIT = "sit"
 WALK_ACTIONS = ("walk_left", "walk_right")
 LOOPING_ACTIONS = frozenset({IDLE, *WALK_ACTIONS})
 PHYSICS_ACTIONS = frozenset({"fall", "thrown", "dragged"})
@@ -86,6 +88,9 @@ class PetWindow:
         self.walk_speed = 150.0
         self.walk_will_hit_wall = False
         self.follow_mouse = self.store.get_setting("follow_mouse") == "1"
+        # What the pet does when nothing else is happening. Focus sessions swap
+        # this to ``sit`` so the quiet pose survives every action that ends.
+        self._rest_action = IDLE
 
         # Effects are silent for now; the switch and the call sites exist so a
         # real backend is a drop-in (see betty_pet.audio).
@@ -103,6 +108,12 @@ class PetWindow:
         self._last_window: WindowRect | None = None
         self._perch_surface: Bounds | None = None
         self.hidden = False
+
+        # Focus sessions: the pet goes quiet and sits with the user.
+        self.focus_timer = FocusTimer(
+            focus_ms=config.focus_minutes * 60_000,
+            break_ms=config.focus_break_minutes * 60_000,
+        )
 
         self.behavior_engine = ThresholdBehaviorEngine(
             default_behavior_rules(), available_actions=set(self.catalog.actions())
@@ -125,6 +136,8 @@ class PetWindow:
                 "limit": ("今天已经吃够了，明天再说吧。", "再吃就胖了。"),
                 "wait": ("等一下嘛，贝蒂还没缓过来。", "让我歇会儿。"),
                 "level_up": ("好感度提升了！现在是「{title}」。", "我们更熟了一点，已经是「{title}」了。"),
+                "focus_start": ("这 {minutes} 分钟贝蒂陪你，专心做事吧。", "安静 {minutes} 分钟，我在这儿坐着。"),
+                "focus_done": ("专注完成，休息一下。", "这一段干得不错。"),
             }
         )
 
@@ -322,6 +335,83 @@ class PetWindow:
             self._perch_surface = surface
             self._ensure_physics()
 
+    # -- focus sessions -----------------------------------------------------
+
+    def start_focus(self) -> bool:
+        """Go quiet and sit with the user for one focus stretch."""
+        if not self.focus_timer.start():
+            self.show_dialog("已经在专注了。")
+            return False
+        self._focus_quiet(True)
+        self._play_sound("focus_start")
+        self.store.log_event("focus_start", {"minutes": self.config.focus_minutes})
+        self.speak(
+            DialogueContext(self.state, recovery="focus_start"),
+            minutes=self.config.focus_minutes,
+        )
+        self._refresh_status()
+        self.scheduler.repeat(
+            "focus_tick", self.config.focus_poll_ms, self._focus_tick, group="focus"
+        )
+        return True
+
+    def stop_focus(self) -> None:
+        """End the session early. An abandoned stretch earns no affection."""
+        if not self.focus_timer.active:
+            self.show_dialog("没有在专注。")
+            return
+        self.focus_timer.stop()
+        self._end_focus()
+
+    def _focus_tick(self) -> None:
+        finished = self.focus_timer.tick(self.config.focus_poll_ms)
+        if finished == FOCUS:
+            self._complete_focus()
+        elif finished is not None:
+            self._end_focus()
+        self._refresh_status()
+
+    def _complete_focus(self) -> None:
+        """A full stretch finished - the one affection source that is not an item.
+
+        Only completed stretches count: quitting early must not be worth the
+        same as sitting through, or the session is just a button.
+        """
+        self.store.bump_daily("focus")
+        self._play_sound("focus_done")
+        self.store.log_event(
+            "focus",
+            {"minutes": self.config.focus_minutes, "affection": self.config.focus_affection},
+        )
+        before = self.state.level
+        self.state.gain_affection(self.config.focus_affection)
+        # Celebrating replaces the sit pose, then ``return_idle`` sits back down
+        # because the rest pose is still ``sit`` for the following break.
+        self.play("happy", priority=PRIORITY_USER)
+        self.speak(DialogueContext(self.state, recovery="focus_done"))
+        if self.state.level > before:
+            self._announce_level_up(self.state.level)
+        self._refresh_status()
+
+    def _end_focus(self) -> None:
+        self.scheduler.cancel_group("focus")
+        self._focus_quiet(False)
+
+    def _focus_quiet(self, quiet: bool) -> None:
+        """Focus mode: stop random behaviour and sit still instead of standing.
+
+        The rest pose is the whole trick - every action ends with ``play(idle)``,
+        so making that resolve to ``sit`` keeps the pet seated for the full
+        stretch without pinning any one animation.
+        """
+        self._rest_action = SIT if quiet else IDLE
+        if quiet:
+            self.scheduler.cancel_group("behavior")
+        self.play(IDLE)
+        if not quiet:
+            self.schedule_random_action()
+        self._refresh_status()
+
     # -- visibility ---------------------------------------------------------
 
     def toggle_visible(self) -> None:
@@ -388,6 +478,11 @@ class PetWindow:
         self.menu.add_separator()
         self.menu.add_command(label="跳到窗口", command=self.perch_on_window)
         self.menu.add_command(label="离开窗口", command=self.leave_window)
+        self.menu.add_separator()
+        self.menu.add_command(
+            label=f"专注 {self.config.focus_minutes} 分钟", command=self.start_focus
+        )
+        self.menu.add_command(label="结束专注", command=self.stop_focus)
         self.menu.add_separator()
         self.menu.add_command(label="状态面板", command=self.show_status)
         self.menu.add_command(label="隐藏到托盘", command=self.hide_pet)
@@ -473,6 +568,9 @@ class PetWindow:
         self.change_scale(0.1 if getattr(event, "delta", 0) > 0 else -0.1)
 
     def on_hover_enter(self, _event: tk.Event) -> None:
+        if self.focus_timer.active:
+            # Focus means still and quiet; a floating mouse is not a greeting.
+            return
         self.scheduler.schedule(
             "hover_wave",
             self.config.hover_delay_ms,
@@ -536,8 +634,13 @@ class PetWindow:
         """Start an action unless a higher-priority one is still running.
 
         ``idle`` always wins, otherwise the pet could get stuck mid-animation.
+        Its *pose* follows context though: ``self._rest_action`` is what the pet
+        does when nothing else is happening (standing, or sitting through a
+        focus session).
         """
-        if action == IDLE:
+        resting = action == IDLE
+        if resting:
+            action = self._rest_action
             self._play_priority = PRIORITY_IDLE
         elif priority < self._play_priority:
             return
@@ -551,7 +654,7 @@ class PetWindow:
         if action in WALK_ACTIONS:
             self._begin_walk(action.removeprefix("walk_"))
             return
-        if action != IDLE and action not in PHYSICS_ACTIONS:
+        if not resting and action not in PHYSICS_ACTIONS:
             self.scheduler.schedule(
                 "return_idle",
                 duration_ms or self.config.action_duration_ms,
@@ -616,6 +719,9 @@ class PetWindow:
         return self._chase_velocity()
 
     def _chase_velocity(self) -> float | None:
+        if self.focus_timer.active:
+            # Focus means sitting still beside the user, not following the mouse.
+            return None
         if not self.follow_mouse or not self.motion.grounded or self.drag_origin is not None:
             return None
         direction = chase_direction(
@@ -764,14 +870,18 @@ class PetWindow:
 
     def _announce_level_up(self, level: int) -> None:
         self._play_sound("level_up")
-        template = self.language_provider.reply(DialogueContext(self.state, recovery="level_up"))
-        if template:
-            self.show_dialog(template.format(title=affection_title(level)))
+        self.speak(DialogueContext(self.state, recovery="level_up"), title=affection_title(level))
         self.store.log_event("level_up", {"level": level, "title": affection_title(level)})
 
-    def speak(self, context: DialogueContext) -> str | None:
-        """Resolve a template or future LLM response and show it when present."""
+    def speak(self, context: DialogueContext, **values) -> str | None:
+        """Resolve a template or future LLM response and show it when present.
+
+        ``values`` fills ``{placeholders}`` (e.g. the current title, the chosen
+        focus length) so one template tracks a changing setting.
+        """
         text = self.language_provider.reply(context)
+        if text and values:
+            text = text.format(**values)
         if text:
             self.show_dialog(text)
         return text
@@ -810,11 +920,17 @@ class PetWindow:
             ground = "空中"
         remaining = affection_to_next_level(self.state.affection)
         progress = "已满" if remaining <= 0 else f"还差 {remaining:.0f}"
+        if self.focus_timer.active:
+            label = "专注" if self.focus_timer.phase == FOCUS else "休息"
+            focus_line = f"{label}　　{format_mmss(self.focus_timer.remaining_ms())}\n"
+        else:
+            focus_line = ""
         self.status_text.set(
             f"饱腹度　{100 - stats.hunger:5.1f}\n"
             f"心情　　{stats.mood:5.1f}\n"
             f"精力　　{stats.energy:5.1f}\n"
             f"好感度　{self.state.affection:5.1f}（{self.state.title}·{progress}）\n"
+            f"{focus_line}"
             f"音效　　{'开' if self.sound_enabled else '关'}\n"
             f"位置　　{int(self.motion.x)}, {int(self.motion.y)}（{ground}）"
         )

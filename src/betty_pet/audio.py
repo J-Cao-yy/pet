@@ -36,6 +36,8 @@ SOUND_KEYS: tuple[str, ...] = (
     "level_up",  # affection crossed a threshold
     "land",  # finished a fall
     "perch",  # jumped onto a window
+    "focus_start",  # a focus stretch began
+    "focus_done",  # a focus stretch finished
 )
 
 _GROUP_KEYS = {"feed": "feed", "play": "play", "rest": "rest"}
