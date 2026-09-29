@@ -229,3 +229,77 @@ def test_the_floor_still_falls_and_lands_when_nothing_drives_vertically():
     assert fell.vy > 0
     assert fell.y > 0
     assert fell.surface is Surface.FLOOR
+
+
+# -- a wall can be a band, not a line ----------------------------------------
+#
+# "允许墙上横向挪动" read as "the edge is a climbable strip": the pet may move
+# inwards and outwards inside the strip and is only clamped at its inner edge.
+# This is pure geometry - the window layer decides when a grip gives.
+
+
+def test_a_zero_band_is_the_plain_wall_line():
+    banded = surface_bounds(AREA, Surface.WALL_LEFT, band=0.0)
+    assert banded == surface_bounds(AREA, Surface.WALL_LEFT)
+
+
+def test_a_band_puts_a_floor_on_the_wall():
+    left = surface_bounds(AREA, Surface.WALL_LEFT, band=60.0)
+    assert (left.left, left.right) == (AREA.left, AREA.left + 60.0)
+    # The band only widens the wall; the travel range along it is untouched.
+    assert (left.top, left.bottom) == (AREA.top, AREA.bottom)
+
+    right = surface_bounds(AREA, Surface.WALL_RIGHT, band=60.0)
+    assert (right.left, right.right) == (AREA.right - 60.0, AREA.right)
+
+
+def test_a_band_wider_than_the_screen_cannot_invert_the_rectangle():
+    left = surface_bounds(AREA, Surface.WALL_LEFT, band=9999.0)
+    assert (left.left, left.right) == (AREA.left, AREA.right)
+    right = surface_bounds(AREA, Surface.WALL_RIGHT, band=9999.0)
+    assert (right.left, right.right) == (AREA.left, AREA.right)
+
+
+def test_a_negative_band_is_treated_as_no_band():
+    assert surface_bounds(AREA, Surface.WALL_LEFT, band=-40.0) == surface_bounds(
+        AREA, Surface.WALL_LEFT
+    )
+
+
+def test_the_ceiling_ignores_the_band():
+    """A hanging pet has nowhere sensible to drift, so it stays a line."""
+    banded = surface_bounds(AREA, Surface.CEILING, band=60.0)
+    assert banded.top == banded.bottom == AREA.top
+
+
+def test_the_floor_ignores_the_band():
+    assert surface_bounds(AREA, Surface.FLOOR, band=60.0) == AREA
+
+
+def test_a_banded_wall_lets_the_pet_roam_inwards_and_clamps_it():
+    bounds = surface_bounds(AREA, Surface.WALL_LEFT, band=60.0)
+    state = attach(MotionState(x=0.0, y=500.0), Surface.WALL_LEFT)
+
+    # Lean inwards for a fifth of a second: it really moves, it is not pinned.
+    state, _events = step(state, 0.2, bounds, CONFIG, drive_vx=100.0)
+    assert state.x == pytest.approx(20.0)
+
+    # Keep leaning: it stops at the inner edge instead of leaving the wall.
+    state, _events = step(state, 1.0, bounds, CONFIG, drive_vx=100.0)
+    assert state.x == bounds.right == AREA.left + 60.0
+
+    # And it can hug its way back to the screen edge.
+    for _ in range(10):
+        state, _events = step(state, 0.1, bounds, CONFIG, drive_vx=-100.0)
+    assert state.x == AREA.left
+
+
+def test_a_banded_wall_still_holds_the_pet_against_gravity():
+    bounds = surface_bounds(AREA, Surface.WALL_RIGHT, band=60.0)
+    state = attach(MotionState(x=AREA.right - 30.0, y=500.0), Surface.WALL_RIGHT)
+    for _ in range(60):
+        state, _events = step(state, 0.016, bounds, CONFIG)
+    assert state.y == pytest.approx(500.0)
+    assert state.x == pytest.approx(AREA.right - 30.0)
+    assert state.grounded is True
+

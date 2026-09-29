@@ -53,10 +53,19 @@ class AppConfig:
     climb_speed_px: float = 140.0
     climb_distance_px: tuple[int, int] = (90, 320)
     wall_reach_px: float = 3.0
-    # Odds, at the end of each climb stretch, that the pet just lets go and
-    # drops instead of picking a new direction. Keeps it from living on the
-    # ceiling forever.
-    climb_release_chance: float = 0.25
+    # The screen edge is not a line but a climbable *band* (see
+    # ``docs/CLIMBING_DESIGN.md`` §7): inside it gravity is suspended and the
+    # pet may shuffle inwards/outwards; push past the inner edge and it peels
+    # off and falls. ``climb_lean_chance`` is the odds that, at the end of a
+    # vertical stretch, the pet starts drifting inwards instead of just picking
+    # another up/down run.
+    climb_band_px: int = 60
+    climb_lean_chance: float = 0.15
+    # Odds, at the end of each climb stretch, that the pet hands the grip back
+    # to gravity and falls from where it is. Kept low on purpose: with a band
+    # the pet has somewhere to roam, so leaving the wall should be the
+    # exception rather than the usual end of a stretch (0.15 + 0.15 = 30%).
+    climb_release_chance: float = 0.15
 
     def clamp_scale(self, value: float) -> float:
         return max(self.min_scale, min(self.max_scale, round(value, 2)))

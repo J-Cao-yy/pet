@@ -173,7 +173,7 @@ def clamp_speed(vx: float, vy: float, limit: float) -> tuple[float, float]:
     return vx * scale, vy * scale
 
 
-def surface_bounds(area: Bounds, surface: Surface) -> Bounds:
+def surface_bounds(area: Bounds, surface: Surface, *, band: float = 0.0) -> Bounds:
     """Collapse ``area`` onto ``surface`` so a clinging pet is pinned to it.
 
     No new motion code is needed to hold a pet against a surface: :func:`step`
@@ -184,14 +184,21 @@ def surface_bounds(area: Bounds, surface: Surface) -> Bounds:
     * ceiling  -> zero height (pin ``y``)
     * walls    -> zero width  (pin ``x``)
 
+    ``band`` thickens a wall into a **climbable strip** instead of a line: the
+    pet may move ``band`` pixels inwards and is only clamped at the strip's
+    inner edge. That is the difference between "the wall is a line" and "the
+    wall is a band you can shuffle around on" - see
+    ``docs/CLIMBING_DESIGN.md`` §7. The ceiling stays a line: walking it means
+    moving *along* it, and a hanging pet has nowhere sensible to drift.
+
     ``FLOOR`` is returned untouched - standing is what ``area`` already means.
     """
     if surface is Surface.CEILING:
         return replace(area, bottom=area.top)
     if surface is Surface.WALL_LEFT:
-        return replace(area, right=area.left)
+        return replace(area, right=min(area.left + max(0.0, band), area.right))
     if surface is Surface.WALL_RIGHT:
-        return replace(area, left=area.right)
+        return replace(area, left=max(area.right - max(0.0, band), area.left))
     return area
 
 

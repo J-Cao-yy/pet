@@ -105,10 +105,13 @@ class PetWindow:
         # this to ``sit``, clinging swaps it to a held pose, so the quiet pose
         # survives every action that ends.
         self._rest_action = IDLE
-        # Climbing: which way it is travelling along the current surface, and
-        # how much of this stretch is left.
+        # Climbing: which way it is travelling along the current surface, how
+        # much of this stretch is left, and which way it is leaning *across* a
+        # wall band ("hug" = press to the screen edge, "in" = drift towards the
+        # screen interior, which ends in a fall once it clears the band).
         self.climb_direction: str | None = None
         self.climb_remaining = 0.0
+        self.climb_lean: str | None = None
 
         # Effects are silent for now; the switch and the call sites exist so a
         # real backend is a drop-in (see betty_pet.audio).
@@ -464,11 +467,19 @@ class PetWindow:
         """The rectangle the pet may move in, for the surface it is on.
 
         Standing on the floor (or on a perched window) uses the full rectangle.
-        A clinging surface collapses it to a line via :func:`surface_bounds`, so
-        "pinned to the wall" needs no new motion code - exactly the same trick
-        perching uses, taken one step further.
+        A clinging surface collapses it via :func:`surface_bounds`, so "pinned
+        to the wall" needs no new motion code - exactly the same trick perching
+        uses, taken one step further.
+
+        The ceiling collapses to a line (walking it means moving *along* it),
+        but a wall collapses to a ``climb_band_px`` wide **band**, not a line:
+        the pet may shuffle inwards and outwards inside that strip and is only
+        clamped at its inner edge. See ``docs/CLIMBING_DESIGN.md`` §7.
         """
-        return surface_bounds(self._active_bounds(), self.surface)
+        band = 0.0
+        if self.surface in WALL_SURFACES.values():
+            band = float(self.config.climb_band_px)
+        return surface_bounds(self._active_bounds(), self.surface, band=band)
 
     def climb_wall(self, side: str) -> bool:
         """Grip a screen edge and start climbing from the current height."""
@@ -526,6 +537,9 @@ class PetWindow:
         self.motion = attach(replace(self.motion, x=position[0], y=position[1]), surface)
         self.climb_direction = direction or random.choice(fallback)
         self.climb_remaining = float(random.randint(*self.config.climb_distance_px))
+        # A wall grip starts pressed against the edge; the ceiling has no
+        # "across" axis to lean on.
+        self.climb_lean = "hug" if surface.along == "y" else None
         self._sync_rest_action()
         self._apply_motion()
         self._set_climb_animation()
@@ -542,6 +556,7 @@ class PetWindow:
         self.motion = detach(self.motion)
         self.climb_direction = None
         self.climb_remaining = 0.0
+        self.climb_lean = None
         self._sync_rest_action()
         self.store.log_event("surface", {"surface": released, "direction": "release"})
 
@@ -555,7 +570,7 @@ class PetWindow:
         self.play(self._climb_animation(), priority=PRIORITY_RANDOM)
 
     def _advance_climb(self, before: MotionState) -> None:
-        """Spend the current stretch, then turn a corner, drop, or keep going."""
+        """Spend the current stretch, then turn a corner, peel off, or keep going."""
         if self.climb_direction is None:
             return
         travelled = (
@@ -570,12 +585,77 @@ class PetWindow:
         if self._reached_corner():
             self._turn_corner()
             return
+        # Same reasoning for the inner edge of a wall band - see _peeled_off().
+        if self._peeled_off():
+            self._peel_off()
+            return
         if self.climb_remaining > 0:
             return
-        if random.random() < self.config.climb_release_chance:
-            self._drop_to_floor()
+        roll = random.random()
+        if roll < self.config.climb_release_chance:
+            if self.surface.along == "y":
+                # Walls fall from where they are, carrying inwards.
+                self._peel_off()
+            else:
+                # The ceiling has no band to drift out of, so it keeps the
+                # older "step down to the floor" exit.
+                self._drop_to_floor()
+        elif self.surface.along == "y" and roll < (
+            self.config.climb_release_chance + self.config.climb_lean_chance
+        ):
+            self._lean_inward()
         else:
             self._pick_new_stretch()
+
+    def _peeled_off(self) -> bool:
+        """True when a wall-clinging pet has been pushed out of its band.
+
+        The band's inner edge is a clamp, not a wall, so the pet can never
+        literally leave. "It has left the band" therefore has to be read as "it
+        is leaning inwards and is already pressed against the inner edge" -
+        that is the moment the grip gives.
+        """
+        if self.surface.along != "y" or self.climb_lean != "in":
+            return False
+        area, reach, band = (
+            self.placement,
+            self.config.wall_reach_px,
+            self.config.climb_band_px,
+        )
+        if self.surface is Surface.WALL_LEFT:
+            return self.motion.x >= area.left + band - reach
+        return self.motion.x <= area.right - band + reach
+
+    def _lean_inward(self) -> None:
+        """Start drifting towards the screen interior, still clinging.
+
+        The fall comes later, at the band's inner edge. That gap is the whole
+        point of a band: the pet gets to move around on the wall for a while
+        before it loses its grip, instead of dropping the instant it leans away.
+        """
+        self.climb_lean = "in"
+        self.climb_remaining = float(random.randint(*self.config.climb_distance_px))
+
+    def _peel_off(self) -> None:
+        """Let go of a wall and fall, carrying inwards.
+
+        Unlike :meth:`_drop_to_floor` this does not teleport: the pet keeps the
+        height it had and gravity does the rest, which is what "爬出带外才掉落"
+        should look like.
+        """
+        inward = 1.0 if self.surface is Surface.WALL_LEFT else -1.0
+        area = self.placement
+        self._let_go()
+        self.motion = replace(
+            self.motion,
+            x=min(max(self.motion.x, area.left), area.right),
+            vx=inward * self.config.climb_speed_px,
+            vy=0.0,
+            airborne_time=0.0,
+        )
+        self._play_priority = PRIORITY_IDLE
+        self.play(IDLE)
+        self._ensure_physics()
 
     def _reached_corner(self) -> bool:
         """True when the pet has run into the end of the surface *it is heading for*.
@@ -619,6 +699,9 @@ class PetWindow:
                 choices = ["left"]
         self.climb_direction = random.choice(choices)
         self.climb_remaining = float(random.randint(*self.config.climb_distance_px))
+        # Back to the screen edge: drifting inwards is a separate decision
+        # (_lean_inward), not something to keep doing once the stretch is over.
+        self.climb_lean = "hug" if self.surface.along == "y" else None
         self._set_climb_animation()
 
     def _turn_corner(self) -> None:
@@ -976,24 +1059,33 @@ class PetWindow:
     def _drive_velocity(self) -> tuple[float | None, float | None]:
         """The ``(horizontal, vertical)`` drive for one step.
 
-        Only one axis is ever driven, because a surface lets the pet travel
-        *along* it and the perpendicular axis belongs to the surface bounds.
-        ``drive_vy`` is the new axis climbing needs: on the floor the pet never
-        has to move itself vertically.
+        A surface lets the pet travel *along* it, so exactly one axis is driven
+        for the floor, the ceiling and a plain walk - ``drive_vy`` is the axis
+        climbing needs, because on the floor the pet never moves itself
+        vertically. Walls are the exception: they are a band, so they drive both
+        axes (climb along, lean across).
         """
         if self.drag_origin is not None:
             return None, None
         if self.surface.clinging:
-            if self.climb_direction is None:
+            speed = self.config.climb_speed_px
+            vx: float | None = None
+            vy: float | None = None
+            if self.climb_direction is not None:
+                if self.surface.along == "y":
+                    vy = speed if self.climb_direction == "down" else -speed
+                else:
+                    vx = speed if self.climb_direction == "right" else -speed
+            # Walls are a band, so they get a second, perpendicular drive: hug
+            # the screen edge, or lean inwards until the grip gives.
+            if self.climb_lean is not None:
+                inward = 1.0 if self.surface is Surface.WALL_LEFT else -1.0
+                vx = inward * (-speed if self.climb_lean == "hug" else speed)
+            if vx is None and vy is None:
                 # Holding on with no input: let the grip friction settle it, so
                 # the physics loop can go idle instead of spinning.
                 return None, None
-            speed = self.config.climb_speed_px
-            if self.surface.along == "y":
-                down = self.climb_direction == "down"
-                return None, speed if down else -speed
-            right = self.climb_direction == "right"
-            return (speed if right else -speed), None
+            return vx, vy
         if self.walk_direction is not None:
             return (self.walk_speed if self.walk_direction == "right" else -self.walk_speed), None
         return self._chase_velocity(), None
