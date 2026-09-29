@@ -20,12 +20,13 @@ Betty Pet 是一个运行在 Windows 桌面的轻量级 2D 桌宠原型。它的
 | 素材管理 | `manifest.json` 声明动作到 PNG 帧的映射，启动时校验缺失文件 | `src/betty_pet/assets.py`、`assets/manifest.json` |
 | 缩放 | 0.3~2.5 倍，滚轮或右键菜单调整 | `config.py`、`window.py` |
 | 对话展示 | 顶部无边框白色气泡，按时自动隐藏 | `window.py`、`config.py` |
-| 命令行 | 资产目录、初始缩放、关闭随机动作、资产检查、存档路径 | `src/betty_pet/__main__.py` |
+| 命令行 | 资产目录、初始缩放、关闭随机动作、资产检查、存档路径、音效覆盖、专注时长 | `src/betty_pet/__main__.py` |
 | 定时调度 | 命名任务、优先级、分组取消、冷却，全部定时器集中管理 | `src/betty_pet/scheduler.py` |
 | 存档 | SQLite 存状态 / 设置 / 事件日志，启动补算离线衰减，每分钟自动保存 | `src/betty_pet/store.py`、`config.py` |
 | 道具 | 6 件道具分喂食 / 玩耍 / 休息三组，声明式表驱动，菜单自动生成 | `src/betty_pet/items.py`、`window.py` |
 | 拒绝规则 | 吃饱拒食、每日上限、冷却未到，三种拒绝各有台词且不消耗次数 | `items.py`、`window.py`、`store.py` |
 | 好感度 | 每 50 点一级（陌生→挚友），只增不减，升级播报并记事件 | `state.py`、`window.py` |
+| 专注计时 | 番茄钟：坐定安静、倒计时、坐满给好感度并自动进休息；中途退出不给奖励 | `src/betty_pet/focus.py`、`window.py` |
 | 物理运动 | 重力、终端速度、空气阻力、地面摩擦、阻尼反弹、拖拽投掷 | `src/betty_pet/physics.py` |
 | 追鼠标 | 死区防抖，朝光标行走，开关写入存档 | `physics.py`、`movement.py`、`window.py` |
 | 悬停反应 | 停留 0.8 秒触发挥手 | `window.py`、`config.py` |
@@ -171,6 +172,13 @@ class StateStore(Protocol):
 - 托盘、栖息、pywin32 都**允许不存在**，分别降级为 `NullTray` / `NullWindowProbe` / 直接可用。新增平台相关能力时保持这个模式，别让"没有托盘"变成"启动不了"。
 - 没有托盘时 `hide_pet()` 会**拒绝隐藏并说明原因**，否则宠物会藏到一个回不来的地方。
 - `autostart.py` 是唯一会写项目目录之外的模块，且**只在显式命令下执行**（`--install-autostart` / `--uninstall-autostart`），写的是「启动」文件夹里的 `.vbs`（可见、可单独删除）。不要在启动流程里自动调用它。
+- **"静止姿态"是可换的**：`play(idle)` 不直接播 `idle`，而是播 `self._rest_action`（默认 `IDLE`，专注期间是 `SIT`）。这样"专注时坐着"不需要额外的定时器去维持——任何动作播完、任何打断之后，`return_idle` 都会把宠物带回坐姿。新增需要改变常态姿态的功能时，改 `_rest_action` 而不是反复 `play("sit")`。
+- `_rest_action` 只在 `play()` 里生效：`play("sit", ...)` 会照常按普通动作处理（1.2 秒后回 idle）。**别用 `play("sit")` 表示"坐下别动"**，那只会坐 1.2 秒。
+- `focus.py` 的 `FocusTimer` 是**纯状态机**：不碰 Tkinter、不碰 `Scheduler`、没有自己的时钟，由窗口把流逝的毫秒喂给它。`tick()` 返回**刚刚结束的阶段**（`FOCUS` / `BREAK`），阶段转换发生在 `tick()` 内部。
+- `FocusTimer.tick()` **一次最多推进一个阶段**，超出的 `delta_ms` 直接丢弃。睡了一觉醒过来不应该一口气跑完好几个番茄钟。
+- 专注**只有坐满才算**：`_complete_focus()` 才给好感度和 `daily_usage` 的 `focus` 计数；`stop_focus()`（提前退出）什么都不给。这是这个功能存在的理由，不要"按比例折算"。
+- 专注的分组是 `focus`（倒计时任务），与 `behavior`（随机动作）分开：`_focus_quiet(True)` 取消 `behavior` 但不取消 `focus`。别把倒计时塞进 `behavior`，否则一安静就把自己停了。
+- 专注期间 `_chase_velocity()` 返回 `None`（不追鼠标）、`on_hover_enter()` 直接 return（不挥手）。想加新的"主动打扰"行为时记得也判一下 `self.focus_timer.active`。
 
 ## 9. 后续会话交接记录
 
@@ -208,7 +216,7 @@ class StateStore(Protocol):
 - **删除已过时的抽象**：`RecoveryMethod` / `RecoveryResult` / `StatRecovery` / `default_recoveries()` 被 `Item` + `apply_item()` 完全取代，已从 `state.py` 与 `__init__` 导出中移除，相关测试迁移到 `tests/test_items.py`。
 - 测试现为 65 项（新增 `test_items.py`，扩充 `test_state.py` / `test_store.py`），`pytest` 与 `ruff` 通过；另做过一次 Tk 冒烟，覆盖子菜单生成、配额标签刷新、喂食、冷却拦截、吃饱拒绝、上限拒绝、升级播报、状态面板、事件落库。
 
-**已完成（当前会话：窗口栖息 / 托盘 / 音效骨架）**
+**已完成（上一轮：窗口栖息 / 托盘 / 音效骨架）**
 
 - 新增 `src/betty_pet/desktop.py`：`WindowRect`、`WindowProbe` 协议、`NullWindowProbe`、`Win32WindowProbe`、`make_probe()`、`perch_bounds()`。只报**前台窗口**，并按进程号排除自己。
 - **窗口栖息**：菜单「跳到窗口」把宠物放到前台窗口上沿，「离开窗口」让它掉回地面；窗口移动/缩放会跟随，关闭、最小化或顶到屏幕顶端会自动脱离并掉落。实现方式是**换 `Bounds`，不动物理**。
@@ -218,11 +226,23 @@ class StateStore(Protocol):
 - `config.py` 新增 `perch_poll_ms` / `tray_poll_ms` / `sound_enabled`；`--sound` / `--no-sound` 覆盖存档。
 - 测试 65 → 99 项（新增 `test_desktop.py` / `test_audio.py` / `test_tray.py` / `test_autostart.py`）。另做过一次 Tk 冒烟，覆盖：栖息到窗口上沿（y=172）、状态面板显示「窗口上」、窗口下移后跟随（y=372）、窗口消失后掉落回地面（y=904）、离开窗口、静止时物理循环不空转、喂食/拒绝音效键、托盘队列翻转跟随鼠标、无托盘时拒绝隐藏、隐藏/恢复往返。
 
+**已完成（当前会话：专注计时）**
+
+- 新增 `src/betty_pet/focus.py`：`FocusTimer`（纯状态机，`FOCUS` / `BREAK` / `IDLE`）+ `format_mmss()`。20 项单测。
+- **专注（番茄钟）**：菜单「专注 25 分钟」/「结束专注」，CLI `--focus` / `--focus-minutes`。专注期间宠物坐下不动、随机动作停掉、不追鼠标、悬停不挥手，状态面板多一行实时倒计时。
+- **坐满才给奖励**：走完 25 分钟才 +3 好感度并记 `focus` 事件与每日次数，然后自动进入 5 分钟休息（继续坐着），休息结束自己回常态。中途退出**什么都不给**。这是目前唯一不靠道具的好感度来源。
+- **发现并修复一个真 bug**：`play("sit")` 会被 1.2 秒后的 `return_idle` 拉回站姿，25 分钟的"陪坐"实际只坐 1.2 秒。改成引入 `self._rest_action`（静止姿态）——专注期间把它从 `idle` 换成 `sit`，于是 `play(idle)` 本身就是坐下，姿态不需要额外定时器维持，也不会和 `return_idle` 打架。
+- `speak()` 增加 `**values`，模板里的 `{minutes}` / `{title}` 由调用点填；`_announce_level_up()` 一并改走 `speak()`，去掉重复的分支。
+- `config.py` 新增 `focus_minutes` / `focus_break_minutes` / `focus_poll_ms` / `focus_affection`；`audio.py` 的 `SOUND_KEYS` 新增 `focus_start` / `focus_done`；包版本 0.5.0 → 0.6.0，`pyproject.toml` 同步。
+- 新增 `docs/CLIMBING_DESIGN.md`：沿墙/天花板攀爬的设计草案（抽象"依附面"、把重力映射到规范坐标），**尚未实现**，其中 3 个决策待确认（素材、墙壁自由度、屏幕边界范围）。
+- 测试 99 → 119 项（新增 `tests/test_focus.py`），`pytest` 与 `ruff check src tests` 通过。另做过一次 Tk 冒烟 + 一次 CLI 桩测试，覆盖：起始无倒计时行、坐姿跨过 `action_duration_ms` 仍然保持、`happy` 播完回到坐姿、专注期间忽略悬停、倒计时实时递减、坐满 +3 且不重复计数、自动进休息并在休息期间继续坐着、休息结束回常态、提前退出不给好感度、音效键落到播放器、升级模板未回归、`--focus` / `--focus-minutes` 生效且 `0` 被拒。
+
 **尚未完成**
 
 - `LanguageProvider` 目前只有模板实现，尚未接入 Ollama/llama.cpp 等本地模型。
 - 道具没有数量、没有货币、没有解锁条件。刻意如此：没有"打工赚钱→买道具"的循环时，数量只会变成一个再也回不来的数字，读起来像 bug 而不是机制。
-- 好感度只由道具驱动，还没有别的来源（抚摸、点击、长时间陪伴）。
+- 好感度现在有两个来源（道具、坐满一次专注），但仍没有**抚摸 / 点按 / 长时间陪伴**这类轻交互。点宠物目前只播 `click` 动作和随机台词，不加好感度。
+- 专注只有单段固定时长（`focus_minutes` / `focus_break_minutes`），没有多轮循环、没有"长休息"、没有跨次累计统计；`FocusTimer.completed_sessions` 只在内存里，重启即清零（落库的是每日次数）。
 - **音效只有抽象层与静音实现**：开关打开也没有声音——缺播放后端，也缺音频素材（`assets/` 里一个音频文件都没有，manifest 也没有音频段）。
 - 托盘用的是系统默认图标，没有自己的 `.ico`；托盘菜单里还没有「跳到窗口」这类入口。
 - 栖息只认主屏幕边界，且拒绝最大化窗口；多显示器未处理。开机自启的命令写好了但**没执行过**，真机开机验证待做。
@@ -237,10 +257,14 @@ class StateStore(Protocol):
 
 - **攀爬**要先给 `Bounds` / `MotionState` 增加"依附面"概念——现在 `grounded` 只有"贴地"一个含义，
   而 Shimeji 的动作表里沿墙、沿天花板是与地面并列的状态。这次栖息已经证明"换 `Bounds`、不动物理"
-  这条路可行，攀爬可以照这个思路往四向扩展。
+  这条路可行，攀爬可以照这个思路往四向扩展。草案见 [攀爬设计草案](CLIMBING_DESIGN.md)，
+  但**卡在素材**：`assets/` 里没有攀爬动作的 PNG，而且墙壁只在主屏幕左右边界、没有别的窗口参与。
 - **多实例**要先回答两个问题：一份状态还是多份状态、存档怎么区分。建议先出设计文档再动代码。
 
 音效要真正响起来，最省事的顺序是：先有音频素材（或允许我用程序合成占位音），再挂后端。
 目前**素材比后端更卡脖子**。
+
+轻交互（抚摸 / 点按给好感度）是比攀爬更小的一步，可以作为多实例与攀爬之间的填充：改动只在
+`window.py` 的点击处理 + 一个新的事件键，不需要新素材。
 
 `LanguageProvider` 与 `StateStore` 两个接口都已就位，接模型时不要改窗口类。
