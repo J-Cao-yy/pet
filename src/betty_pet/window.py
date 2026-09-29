@@ -29,9 +29,13 @@ from .physics import (
     DragTracker,
     MotionEvents,
     MotionState,
+    Surface,
+    attach,
     bounds_for,
     clamp_to_bounds,
+    detach,
     step,
+    surface_bounds,
 )
 from .scheduler import Scheduler, TkClock
 from .state import affection_title, affection_to_next_level
@@ -41,14 +45,23 @@ from .tray import NullTray, TrayAction, make_tray
 IDLE = "idle"
 SIT = "sit"
 WALK_ACTIONS = ("walk_left", "walk_right")
-LOOPING_ACTIONS = frozenset({IDLE, *WALK_ACTIONS})
+# Continuous travel: these loop, and they must never be given a return-to-idle
+# timer, or a climb would drop back to the resting pose mid-wall.
+CLIMB_ACTIONS = ("climb_wall_left", "climb_wall_right", "walk_ceiling")
+TRAVEL_ACTIONS = (*WALK_ACTIONS, *CLIMB_ACTIONS)
+LOOPING_ACTIONS = frozenset({IDLE, *TRAVEL_ACTIONS})
 PHYSICS_ACTIONS = frozenset({"fall", "thrown", "dragged"})
+WALL_SURFACES = {"left": Surface.WALL_LEFT, "right": Surface.WALL_RIGHT}
 
 PRIORITY_IDLE = 0
 PRIORITY_RANDOM = 1
 PRIORITY_USER = 5
 
 CHASE_POLL_MS = 250
+
+# The resting pose while clinging: a held pose per surface, swapped through
+# ``_rest_action`` so that every action that ends puts the pet back on the wall.
+CLING_REST_ACTIONS = {Surface.WALL_LEFT: "climb", Surface.WALL_RIGHT: "climb", Surface.CEILING: SIT}
 
 
 class PetWindow:
@@ -89,8 +102,13 @@ class PetWindow:
         self.walk_will_hit_wall = False
         self.follow_mouse = self.store.get_setting("follow_mouse") == "1"
         # What the pet does when nothing else is happening. Focus sessions swap
-        # this to ``sit`` so the quiet pose survives every action that ends.
+        # this to ``sit``, clinging swaps it to a held pose, so the quiet pose
+        # survives every action that ends.
         self._rest_action = IDLE
+        # Climbing: which way it is travelling along the current surface, and
+        # how much of this stretch is left.
+        self.climb_direction: str | None = None
+        self.climb_remaining = 0.0
 
         # Effects are silent for now; the switch and the call sites exist so a
         # real backend is a drop-in (see betty_pet.audio).
@@ -279,12 +297,18 @@ class PetWindow:
         if surface is None:
             self.show_dialog("那个窗口顶上没地方站。")
             return False
+        # Coming off a wall first: perching is a floor, and ``surface`` in the
+        # motion state would otherwise still say "clinging to the left edge".
+        self._let_go()
         self.cancel_motion()
         self.perched = target
         self._last_window = target
         self._perch_surface = surface
         x = min(max(self.motion.x, surface.left), surface.right)
-        self.motion = replace(self.motion, x=x, y=surface.bottom, vx=0.0, vy=0.0, grounded=True)
+        self.motion = attach(
+            replace(self.motion, x=x, y=surface.bottom, vx=0.0, vy=0.0), Surface.FLOOR
+        )
+        self._sync_rest_action()
         self._apply_motion()
         self._play_priority = PRIORITY_IDLE
         self.play("wave", priority=PRIORITY_USER)
@@ -404,13 +428,234 @@ class PetWindow:
         so making that resolve to ``sit`` keeps the pet seated for the full
         stretch without pinning any one animation.
         """
-        self._rest_action = SIT if quiet else IDLE
+        self._sync_rest_action(sit=quiet)
         if quiet:
             self.scheduler.cancel_group("behavior")
         self.play(IDLE)
         if not quiet:
             self.schedule_random_action()
         self._refresh_status()
+
+    def _sync_rest_action(self, *, sit: bool | None = None) -> None:
+        """Recompute the resting pose.
+
+        One variable covers three situations, because every action ends with
+        ``play(idle)``: standing on the floor, sitting through a focus session,
+        and holding on to a wall or the ceiling. Keeping it in one place is what
+        stops one feature from silently clobbering another.
+        """
+        if sit is None:
+            sit = self.focus_timer.active
+        if sit:
+            self._rest_action = SIT
+        elif self.surface.clinging:
+            self._rest_action = CLING_REST_ACTIONS[self.surface]
+        else:
+            self._rest_action = IDLE
+
+    # -- climbing -----------------------------------------------------------
+
+    @property
+    def surface(self) -> Surface:
+        """The surface the pet is held by right now."""
+        return self.motion.surface
+
+    def _effective_bounds(self) -> Bounds:
+        """The rectangle the pet may move in, for the surface it is on.
+
+        Standing on the floor (or on a perched window) uses the full rectangle.
+        A clinging surface collapses it to a line via :func:`surface_bounds`, so
+        "pinned to the wall" needs no new motion code - exactly the same trick
+        perching uses, taken one step further.
+        """
+        return surface_bounds(self._active_bounds(), self.surface)
+
+    def climb_wall(self, side: str) -> bool:
+        """Grip a screen edge and start climbing from the current height."""
+        surface = WALL_SURFACES.get(side)
+        if surface is None or self.surface.clinging:
+            return False
+        self._grip(surface, direction=random.choice(("up", "down")))
+        return True
+
+    def climb_ceiling(self) -> bool:
+        """Grip the top of the screen and walk along it."""
+        if self.surface.clinging:
+            return False
+        self._grip(Surface.CEILING, direction=random.choice(("left", "right")))
+        return True
+
+    def leave_surface(self) -> None:
+        """Drop off the wall or ceiling the pet is holding on to."""
+        if not self.surface.clinging:
+            self.show_dialog("没在墙上。")
+            return
+        self._let_go()
+        self.play(IDLE)
+        self._ensure_physics()
+
+    def _grip(self, surface: Surface, *, direction: str | None = None) -> None:
+        """Attach to ``surface`` and begin a climb along it."""
+        area, reach = self.placement, self.config.wall_reach_px
+        if surface in (Surface.WALL_LEFT, Surface.WALL_RIGHT):
+            x = area.left if surface is Surface.WALL_LEFT else area.right
+            y = min(max(self.motion.y, area.top), area.bottom)
+            position = (x, y)
+            # Never start out pointing into the end of the surface the pet is
+            # already standing at - that would round the corner on frame one.
+            if y <= area.top + reach:
+                fallback = ("down",)
+            elif y >= area.bottom - reach:
+                fallback = ("up",)
+            else:
+                fallback = ("up", "down")
+        else:
+            x = min(max(self.motion.x, area.left), area.right)
+            position = (x, area.top)
+            if x <= area.left + reach:
+                fallback = ("right",)
+            elif x >= area.right - reach:
+                fallback = ("left",)
+            else:
+                fallback = ("left", "right")
+
+        # A perched window is a floor, not a wall: let go of that first, or the
+        # pet would be gripping one screen edge and standing on a window at once.
+        self._leave_perch(fall=False)
+        self.cancel_motion()
+        self.motion = attach(replace(self.motion, x=position[0], y=position[1]), surface)
+        self.climb_direction = direction or random.choice(fallback)
+        self.climb_remaining = float(random.randint(*self.config.climb_distance_px))
+        self._sync_rest_action()
+        self._apply_motion()
+        self._set_climb_animation()
+        self._ensure_physics()
+        self.store.log_event(
+            "surface", {"surface": str(surface), "direction": self.climb_direction}
+        )
+
+    def _let_go(self) -> None:
+        """Stop clinging. Whatever happens next is ordinary gravity."""
+        if not self.surface.clinging:
+            return
+        released = str(self.surface)
+        self.motion = detach(self.motion)
+        self.climb_direction = None
+        self.climb_remaining = 0.0
+        self._sync_rest_action()
+        self.store.log_event("surface", {"surface": released, "direction": "release"})
+
+    def _climb_animation(self) -> str:
+        if self.surface is Surface.CEILING:
+            return "walk_ceiling"
+        return "climb_wall_left" if self.surface is Surface.WALL_LEFT else "climb_wall_right"
+
+    def _set_climb_animation(self) -> None:
+        self._play_priority = PRIORITY_IDLE
+        self.play(self._climb_animation(), priority=PRIORITY_RANDOM)
+
+    def _advance_climb(self, before: MotionState) -> None:
+        """Spend the current stretch, then turn a corner, drop, or keep going."""
+        if self.climb_direction is None:
+            return
+        travelled = (
+            abs(self.motion.y - before.y)
+            if self.surface.along == "y"
+            else abs(self.motion.x - before.x)
+        )
+        self.climb_remaining -= travelled
+        # Checked every tick, not only when the distance runs out: otherwise a
+        # long stretch would press the pet into the corner forever instead of
+        # carrying it onto the next surface.
+        if self._reached_corner():
+            self._turn_corner()
+            return
+        if self.climb_remaining > 0:
+            return
+        if random.random() < self.config.climb_release_chance:
+            self._drop_to_floor()
+        else:
+            self._pick_new_stretch()
+
+    def _reached_corner(self) -> bool:
+        """True when the pet has run into the end of the surface *it is heading for*.
+
+        Direction matters: standing at the bottom of a wall is only "the end"
+        when climbing down. Without this, gripping a wall from the floor would
+        read as having already arrived and drop the pet straight back down.
+        """
+        area, reach = self.placement, self.config.wall_reach_px
+        if self.surface.along == "y":
+            if self.climb_direction == "up":
+                return self.motion.y <= area.top + reach
+            if self.climb_direction == "down":
+                return self.motion.y >= area.bottom - reach
+            return False
+        if self.climb_direction == "left":
+            return self.motion.x <= area.left + reach
+        if self.climb_direction == "right":
+            return self.motion.x >= area.right - reach
+        return False
+
+    def _pick_new_stretch(self) -> None:
+        """Keep climbing: new direction along this surface, new distance.
+
+        Reversing is allowed, but never into the corner the pet is standing at -
+        that would just round it again on the next tick and turn the climb into
+        a jitter.
+        """
+        area, reach = self.placement, self.config.wall_reach_px
+        if self.surface.along == "y":
+            choices = ["up", "down"]
+            if self.motion.y <= area.top + reach:
+                choices = ["down"]
+            elif self.motion.y >= area.bottom - reach:
+                choices = ["up"]
+        else:
+            choices = ["left", "right"]
+            if self.motion.x <= area.left + reach:
+                choices = ["right"]
+            elif self.motion.x >= area.right - reach:
+                choices = ["left"]
+        self.climb_direction = random.choice(choices)
+        self.climb_remaining = float(random.randint(*self.config.climb_distance_px))
+        self._set_climb_animation()
+
+    def _turn_corner(self) -> None:
+        """Round a screen corner, or step off at the bottom of a wall."""
+        surface, direction = self.surface, self.climb_direction
+
+        if surface in (Surface.WALL_LEFT, Surface.WALL_RIGHT):
+            if direction == "up":
+                # Crowning the wall: carry on along the ceiling, away from it.
+                inward = "right" if surface is Surface.WALL_LEFT else "left"
+                self._grip(Surface.CEILING, direction=inward)
+            else:
+                self._drop_to_floor()
+            return
+
+        # On the ceiling, the ends of the screen are the tops of the walls.
+        if direction == "left":
+            self._grip(Surface.WALL_LEFT, direction="down")
+        else:
+            self._grip(Surface.WALL_RIGHT, direction="down")
+
+    def _drop_to_floor(self) -> None:
+        """Come down off a surface and land. Gravity and walking return."""
+        area = self.placement
+        self._let_go()
+        self.motion = replace(
+            self.motion,
+            x=min(max(self.motion.x, area.left), area.right),
+            y=area.bottom,
+            vx=0.0,
+            vy=0.0,
+            grounded=True,
+        )
+        self._play_priority = PRIORITY_IDLE
+        self.play(IDLE)
+        self._play_sound("land")
+        self._ensure_physics()
 
     # -- visibility ---------------------------------------------------------
 
@@ -478,6 +723,11 @@ class PetWindow:
         self.menu.add_separator()
         self.menu.add_command(label="跳到窗口", command=self.perch_on_window)
         self.menu.add_command(label="离开窗口", command=self.leave_window)
+        self.menu.add_separator()
+        self.menu.add_command(label="爬左墙", command=lambda: self.climb_wall("left"))
+        self.menu.add_command(label="爬右墙", command=lambda: self.climb_wall("right"))
+        self.menu.add_command(label="上墙（天花板）", command=self.climb_ceiling)
+        self.menu.add_command(label="离开墙面", command=self.leave_surface)
         self.menu.add_separator()
         self.menu.add_command(
             label=f"专注 {self.config.focus_minutes} 分钟", command=self.start_focus
@@ -595,9 +845,10 @@ class PetWindow:
         dx, dy = event.x - self.drag_origin[0], event.y - self.drag_origin[1]
         if abs(dx) + abs(dy) > 3:
             if not self.dragged:
-                # Grabbing the pet is how you take it off a window; a plain
-                # click must not detach it.
+                # Grabbing the pet is how you take it off a window or a wall; a
+                # plain click must not detach it.
                 self._leave_perch(fall=False)
+                self._let_go()
             self.dragged = True
         x = self.root.winfo_x() + dx
         y = self.root.winfo_y() + dy
@@ -624,7 +875,9 @@ class PetWindow:
         """Turn the recorded drag gesture into a velocity and let go."""
         vx, vy = self.drag_tracker.release_velocity(time.monotonic(), self.config.physics)
         self.drag_tracker.clear()
-        self.motion = replace(self.motion, vx=vx, vy=vy, grounded=False, airborne_time=0.0)
+        self.motion = replace(
+            self.motion, vx=vx, vy=vy, grounded=False, airborne_time=0.0, surface=Surface.FLOOR
+        )
         verb = "thrown" if math.hypot(vx, vy) >= self.config.physics.throw_threshold else "fall"
         self._play_priority = PRIORITY_IDLE
         self.play(verb, priority=PRIORITY_USER)
@@ -654,7 +907,7 @@ class PetWindow:
         if action in WALK_ACTIONS:
             self._begin_walk(action.removeprefix("walk_"))
             return
-        if not resting and action not in PHYSICS_ACTIONS:
+        if not resting and action not in PHYSICS_ACTIONS and action not in LOOPING_ACTIONS:
             self.scheduler.schedule(
                 "return_idle",
                 duration_ms or self.config.action_duration_ms,
@@ -703,24 +956,54 @@ class PetWindow:
 
     def _physics_tick(self) -> None:
         dt = self.config.physics_interval_ms / 1000.0
-        drive = self._drive_velocity()
-        before_x = self.motion.x
-        self.motion, events = step(self.motion, dt, self._active_bounds(), self.config.physics, drive_vx=drive)
+        drive_vx, drive_vy = self._drive_velocity()
+        before = self.motion
+        self.motion, events = step(
+            self.motion,
+            dt,
+            self._effective_bounds(),
+            self.config.physics,
+            drive_vx=drive_vx,
+            drive_vy=drive_vy,
+        )
         self._apply_motion()
-        self._handle_motion_events(events, before_x)
-        if self._should_keep_physics(drive):
+        self._handle_motion_events(events, before)
+        if self._should_keep_physics(drive_vx, drive_vy):
             self.scheduler.schedule(
                 "physics_step", self.config.physics_interval_ms, self._physics_tick, group="physics"
             )
 
-    def _drive_velocity(self) -> float | None:
+    def _drive_velocity(self) -> tuple[float | None, float | None]:
+        """The ``(horizontal, vertical)`` drive for one step.
+
+        Only one axis is ever driven, because a surface lets the pet travel
+        *along* it and the perpendicular axis belongs to the surface bounds.
+        ``drive_vy`` is the new axis climbing needs: on the floor the pet never
+        has to move itself vertically.
+        """
+        if self.drag_origin is not None:
+            return None, None
+        if self.surface.clinging:
+            if self.climb_direction is None:
+                # Holding on with no input: let the grip friction settle it, so
+                # the physics loop can go idle instead of spinning.
+                return None, None
+            speed = self.config.climb_speed_px
+            if self.surface.along == "y":
+                down = self.climb_direction == "down"
+                return None, speed if down else -speed
+            right = self.climb_direction == "right"
+            return (speed if right else -speed), None
         if self.walk_direction is not None:
-            return self.walk_speed if self.walk_direction == "right" else -self.walk_speed
-        return self._chase_velocity()
+            return (self.walk_speed if self.walk_direction == "right" else -self.walk_speed), None
+        return self._chase_velocity(), None
 
     def _chase_velocity(self) -> float | None:
         if self.focus_timer.active:
             # Focus means sitting still beside the user, not following the mouse.
+            return None
+        if self.surface.clinging:
+            # Chasing is a floor behaviour; a climbing pet already has a job.
             return None
         if not self.follow_mouse or not self.motion.grounded or self.drag_origin is not None:
             return None
@@ -734,6 +1017,8 @@ class PetWindow:
         return self.config.chase_speed_px if direction == "right" else -self.config.chase_speed_px
 
     def _chase_poll(self) -> None:
+        if self.surface.clinging:
+            return
         velocity = self._chase_velocity()
         if velocity is None:
             return
@@ -743,24 +1028,44 @@ class PetWindow:
             self._set_action(self.catalog.resolve(want))
         self._ensure_physics()
 
-    def _should_keep_physics(self, drive: float | None) -> bool:
-        if drive is not None or self.walk_direction is not None:
+    def _should_keep_physics(self, drive_vx: float | None, drive_vy: float | None) -> bool:
+        if drive_vx is not None or drive_vy is not None or self.walk_direction is not None:
             return True
         return not self.motion.settled()
 
-    def _handle_motion_events(self, events: MotionEvents, before_x: float) -> None:
+    def _handle_motion_events(self, events: MotionEvents, before: MotionState) -> None:
+        if self.surface.clinging:
+            self._advance_climb(before)
+            return
         if events.landed:
             self._play_priority = PRIORITY_IDLE
             self.play(IDLE)
             self._play_sound("land")
             return
+        if events.hit_wall and self._grip_adjacent_wall(events):
+            return
         if self.walk_direction is None:
             return
-        self.walk_remaining -= abs(self.motion.x - before_x)
+        self.walk_remaining -= abs(self.motion.x - before.x)
         if self.walk_remaining <= 0:
             hit_wall = self.walk_will_hit_wall or events.hit_wall
             self._play_priority = PRIORITY_IDLE
             self.play("climb" if hit_wall else IDLE)
+
+    def _grip_adjacent_wall(self, events: MotionEvents) -> bool:
+        """Walking into a screen edge grabs it instead of just bumping into it.
+
+        Only from the real floor: while perching, the physics rectangle is the
+        *window*, and gripping its edge would drag the pet off onto the screen
+        edge behind it.
+        """
+        if self.perched is not None or not self.motion.grounded:
+            return False
+        if events.left_wall:
+            return self.climb_wall("left")
+        if events.right_wall:
+            return self.climb_wall("right")
+        return False
 
     def toggle_follow_mouse(self) -> None:
         self.set_follow_mouse(not self.follow_mouse)
@@ -806,6 +1111,11 @@ class PetWindow:
     def _random_action(self) -> None:
         self.state.update_elapsed()
         self._refresh_status()
+        if self.surface.clinging:
+            # Climbing is already doing something; a random nap mid-wall would
+            # fight the climb for the pose and freeze it in place.
+            self.schedule_random_action()
+            return
         if not self.motion.grounded:
             self.schedule_random_action()
             return
@@ -912,7 +1222,13 @@ class PetWindow:
 
     def _refresh_status(self) -> None:
         stats = self.state.stats
-        if self.perched is not None:
+        if self.surface is Surface.CEILING:
+            ground = "天花板"
+        elif self.surface is Surface.WALL_LEFT:
+            ground = "左墙"
+        elif self.surface is Surface.WALL_RIGHT:
+            ground = "右墙"
+        elif self.perched is not None:
             ground = "窗口上"
         elif self.motion.grounded:
             ground = "地面"

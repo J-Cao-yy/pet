@@ -46,6 +46,17 @@ class AppConfig:
     focus_break_minutes: int = 5
     focus_poll_ms: int = 1_000
     focus_affection: float = 3.0
+    # Climbing (see docs/CLIMBING_DESIGN.md). ``wall_reach_px`` is how far inside
+    # the screen edge the pet starts gripping: 0 means it will only climb when
+    # its own corner is exactly on the edge, which the physics never quite
+    # produces, so the tolerance is explicit.
+    climb_speed_px: float = 140.0
+    climb_distance_px: tuple[int, int] = (90, 320)
+    wall_reach_px: float = 3.0
+    # Odds, at the end of each climb stretch, that the pet just lets go and
+    # drops instead of picking a new direction. Keeps it from living on the
+    # ceiling forever.
+    climb_release_chance: float = 0.25
 
     def clamp_scale(self, value: float) -> float:
         return max(self.min_scale, min(self.max_scale, round(value, 2)))
