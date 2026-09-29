@@ -86,6 +86,8 @@ def default_behavior_rules() -> tuple[BehaviorRule, ...]:
         BehaviorRule(BehaviorAction("sit", dialogue_key="tired"), energy_at_most=40, weight=2),
         BehaviorRule(BehaviorAction("happy", dialogue_key="happy"), mood_at_least=85, weight=2),
         BehaviorRule(BehaviorAction("wave", dialogue_key="greet"), mood_at_least=60, energy_at_least=50, weight=1),
+        BehaviorRule(BehaviorAction("walk_left", dialogue_key="walk"), energy_at_least=30, weight=1),
+        BehaviorRule(BehaviorAction("walk_right", dialogue_key="walk"), energy_at_least=30, weight=1),
     )
 
 
@@ -111,4 +113,3 @@ class TemplateLanguageProvider:
         key = context.action.dialogue_key if context.action else context.recovery
         choices = self.templates.get(key or "")
         return self.rng.choice(choices) if choices else None
-

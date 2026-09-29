@@ -16,6 +16,14 @@ DEFAULT_MANIFEST: dict[str, list[str]] = {
 }
 
 
+ACTION_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "fall": ("fall", "idle"),
+    "thrown": ("thrown", "click", "idle"),
+    "dragged": ("dragged", "climb", "idle"),
+    "chase_mouse": ("chase_mouse", "walk_left", "idle"),
+}
+
+
 class AssetCatalog:
     """Loads animation frames from a manifest without coupling assets to the UI."""
 
@@ -35,6 +43,22 @@ class AssetCatalog:
 
     def actions(self) -> tuple[str, ...]:
         return tuple(self.manifest)
+
+    def resolve(self, action: str) -> str:
+        """Map a semantic action onto the closest animation that actually exists.
+
+        Physics and interaction verbs (``fall`` / ``thrown`` / ``dragged`` /
+        ``chase_mouse``) have no art yet. Resolving through
+        :data:`ACTION_FALLBACKS` keeps the pet animated with a stand-in frame
+        until the matching PNGs land in the manifest, instead of freezing on
+        the last one.
+        """
+        for candidate in ACTION_FALLBACKS.get(action, (action,)):
+            if candidate in self.manifest:
+                return candidate
+        if "idle" in self.manifest:
+            return "idle"
+        return next(iter(self.manifest), action)
 
     def paths_for(self, action: str) -> list[Path]:
         names = self.manifest.get(action) or self.manifest.get("idle", [])
