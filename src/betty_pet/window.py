@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import queue
 import random
 import time
 import tkinter as tk
@@ -10,6 +11,7 @@ from tkinter import Menu, messagebox
 from PIL import ImageTk
 
 from .assets import AssetCatalog
+from .audio import SilentPlayer, sound_for_group, sound_for_refusal
 from .behavior import (
     DialogueContext,
     TemplateLanguageProvider,
@@ -17,6 +19,7 @@ from .behavior import (
     default_behavior_rules,
 )
 from .config import AppConfig
+from .desktop import WindowProbe, WindowRect, make_probe, perch_bounds
 from .items import GROUP_LABELS, Item, ItemOutcome, apply_item, default_items, items_by_group
 from .model import PetModel
 from .movement import MovementPlan, MovementPlanner, chase_direction, horizontal_target
@@ -32,6 +35,7 @@ from .physics import (
 from .scheduler import Scheduler, TkClock
 from .state import affection_title, affection_to_next_level
 from .store import MemoryStateStore, SQLiteStateStore
+from .tray import NullTray, TrayAction, make_tray
 
 IDLE = "idle"
 WALK_ACTIONS = ("walk_left", "walk_right")
@@ -82,6 +86,23 @@ class PetWindow:
         self.walk_speed = 150.0
         self.walk_will_hit_wall = False
         self.follow_mouse = self.store.get_setting("follow_mouse") == "1"
+
+        # Effects are silent for now; the switch and the call sites exist so a
+        # real backend is a drop-in (see betty_pet.audio).
+        if config.sound_enabled is not None:
+            self.sound_enabled = config.sound_enabled
+        else:
+            self.sound_enabled = (self.store.get_setting("sound") or "0") == "1"
+        self.sound = SilentPlayer()
+
+        # Window perching: the probe reports the foreground window, the pet
+        # stands on its top edge. ``_last_window`` remembers the window the user
+        # was looking at, because interacting with the pet steals focus.
+        self.probe: WindowProbe = make_probe()
+        self.perched: WindowRect | None = None
+        self._last_window: WindowRect | None = None
+        self._perch_surface: Bounds | None = None
+        self.hidden = False
 
         self.behavior_engine = ThresholdBehaviorEngine(
             default_behavior_rules(), available_actions=set(self.catalog.actions())
@@ -143,6 +164,7 @@ class PetWindow:
         self._load_images()
         self._render()
         self._apply_motion()
+        self.tray = self._start_tray()
         self._start_timers()
 
     @staticmethod
@@ -155,6 +177,170 @@ class PetWindow:
         except Exception as error:  # pragma: no cover - defensive fallback
             print(f"[betty_pet] 存档不可用，本次运行不持久化：{error}")
             return MemoryStateStore()
+
+    # -- tray ---------------------------------------------------------------
+
+    def _start_tray(self):
+        """A tray icon when the platform allows it, otherwise a silent stand-in.
+
+        A tray that cannot be created must never stop the pet from running, so
+        this collapses every failure into :class:`NullTray`.
+        """
+        tray = make_tray(self._tray_tooltip())
+        if not tray.start():
+            return NullTray()
+        return tray
+
+    def _tray_tooltip(self) -> str:
+        chasing = "开" if self.follow_mouse else "关"
+        return f"Betty Pet · 跟随鼠标：{chasing}"
+
+    def _drain_tray(self) -> None:
+        """Tray thread -> Tk main thread hand-off.
+
+        The tray runs on its own thread and only ever pushes strings onto a
+        queue; this job is the single place those become UI mutations. Tkinter
+        is not thread-safe, so nothing else may touch it from the tray side.
+        """
+        if isinstance(self.tray, NullTray):
+            return
+        while True:
+            try:
+                action = self.tray.actions.get_nowait()
+            except queue.Empty:
+                return
+            if action == TrayAction.TOGGLE_VISIBLE:
+                self.toggle_visible()
+            elif action == TrayAction.TOGGLE_FOLLOW:
+                self.set_follow_mouse(not self.follow_mouse)
+            elif action == TrayAction.QUIT:
+                self.close()
+                return
+
+    # -- sound --------------------------------------------------------------
+
+    def _play_sound(self, key: str | None) -> None:
+        """Fire an effect for ``key`` when sound is on. Never blocks, never raises."""
+        if key is None or not self.sound_enabled:
+            return
+        try:
+            self.sound.play(key)
+        except Exception:  # pragma: no cover - a broken player must not kill the pet
+            pass
+
+    def _hover_wave(self) -> None:
+        self.play("wave")
+        self._play_sound("wave")
+
+    def toggle_sound(self) -> None:
+        self.sound_enabled = bool(self.sound_var.get())
+        self.store.set_setting("sound", "1" if self.sound_enabled else "0")
+        if self.sound_enabled:
+            # Be honest: the switch works, but there is no backend behind it yet.
+            self.show_dialog("音效开了，不过还没接播放后端，暂时听不到。")
+
+    # -- window perching ----------------------------------------------------
+
+    def _active_bounds(self) -> Bounds:
+        """The surface the pet stands on: a window's top edge, or the floor.
+
+        Perching is nothing more than swapping the physics rectangle, which is
+        why gravity, walking along the surface and falling back to the floor
+        all keep working without a line of new motion maths.
+        """
+        if self.perched is None:
+            return self.placement
+        surface = perch_bounds(self.perched, *self.size, self.placement)
+        if surface is None:
+            self._leave_perch(fall=True)
+            return self.placement
+        return surface
+
+    def perch_on_window(self) -> bool:
+        """Jump onto the top edge of the window the user was last using."""
+        target = self.probe.foreground() or self._last_window
+        if target is None:
+            self.show_dialog("没找到能站的窗口。")
+            return False
+        surface = perch_bounds(target, *self.size, self.placement)
+        if surface is None:
+            self.show_dialog("那个窗口顶上没地方站。")
+            return False
+        self.cancel_motion()
+        self.perched = target
+        self._last_window = target
+        self._perch_surface = surface
+        x = min(max(self.motion.x, surface.left), surface.right)
+        self.motion = replace(self.motion, x=x, y=surface.bottom, vx=0.0, vy=0.0, grounded=True)
+        self._apply_motion()
+        self._play_priority = PRIORITY_IDLE
+        self.play("wave", priority=PRIORITY_USER)
+        self._play_sound("perch")
+        self.store.log_event("perch", {"title": target.title[:60]})
+        self.show_dialog(f"站到「{(target.title or '那个窗口').strip()[:12]}」上面了。")
+        return True
+
+    def leave_window(self) -> None:
+        """Step off the perch and fall back to the floor."""
+        if self.perched is None:
+            self.show_dialog("贝蒂没在窗口上。")
+            return
+        self._leave_perch(fall=True)
+
+    def _leave_perch(self, *, fall: bool) -> None:
+        if self.perched is None:
+            return
+        self.perched = None
+        self._perch_surface = None
+        self.motion = replace(self.motion, grounded=not fall, vy=0.0)
+        if fall:
+            self._play_priority = PRIORITY_IDLE
+            self.play("fall", priority=PRIORITY_USER)
+            self._ensure_physics()
+
+    def _probe_windows(self) -> None:
+        """Remember the user's window, and keep the perch in sync with it."""
+        current = self.probe.foreground()
+        if current is not None:
+            self._last_window = current
+        if self.perched is None:
+            return
+        refreshed = self.probe.inspect(self.perched.handle)
+        if refreshed is None:
+            # Closed, minimised or hidden: the platform is gone.
+            self._leave_perch(fall=True)
+            return
+        surface = perch_bounds(refreshed, *self.size, self.placement)
+        if surface is None:
+            self._leave_perch(fall=True)
+            return
+        self.perched = refreshed
+        if surface != self._perch_surface:
+            # The window moved or was resized under the pet. Wake the physics
+            # loop so it follows, instead of floating where the window used to
+            # be - and stay idle the rest of the time.
+            self._perch_surface = surface
+            self._ensure_physics()
+
+    # -- visibility ---------------------------------------------------------
+
+    def toggle_visible(self) -> None:
+        self.show_pet() if self.hidden else self.hide_pet()
+
+    def hide_pet(self) -> None:
+        if isinstance(self.tray, NullTray):
+            # Without a tray there is no way back, so refuse instead of
+            # stranding the pet off-screen.
+            self.show_dialog("没有托盘，藏起来就找不回来了。")
+            return
+        self.hidden = True
+        self.hide_status()
+        self.dialog.withdraw()
+        self.root.withdraw()
+
+    def show_pet(self) -> None:
+        self.hidden = False
+        self.root.deiconify()
 
     def _build_dialog(self) -> None:
         self.dialog = tk.Toplevel(self.root)
@@ -197,7 +383,14 @@ class PetWindow:
         self.menu.add_separator()
         self.follow_var = tk.BooleanVar(value=self.follow_mouse)
         self.menu.add_checkbutton(label="跟随鼠标", variable=self.follow_var, command=self.toggle_follow_mouse)
+        self.sound_var = tk.BooleanVar(value=self.sound_enabled)
+        self.menu.add_checkbutton(label="音效", variable=self.sound_var, command=self.toggle_sound)
+        self.menu.add_separator()
+        self.menu.add_command(label="跳到窗口", command=self.perch_on_window)
+        self.menu.add_command(label="离开窗口", command=self.leave_window)
+        self.menu.add_separator()
         self.menu.add_command(label="状态面板", command=self.show_status)
+        self.menu.add_command(label="隐藏到托盘", command=self.hide_pet)
         self.menu.add_separator()
         self.menu.add_command(label="放大", command=lambda: self.change_scale(0.1))
         self.menu.add_command(label="缩小", command=lambda: self.change_scale(-0.1))
@@ -252,6 +445,12 @@ class PetWindow:
     def _start_timers(self) -> None:
         self.scheduler.repeat("animate", self.config.frame_interval_ms, self._animate, group="animation")
         self.scheduler.repeat("chase_poll", CHASE_POLL_MS, self._chase_poll, group="chase")
+        if self.probe.available():
+            self.scheduler.repeat(
+                "window_probe", self.config.perch_poll_ms, self._probe_windows, group="perch"
+            )
+        if not isinstance(self.tray, NullTray):
+            self.scheduler.repeat("tray_poll", self.config.tray_poll_ms, self._drain_tray, group="tray")
         if self.config.persist:
             self.scheduler.repeat("autosave", self.config.autosave_interval_ms, self._autosave, group="persistence")
         self.schedule_random_action()
@@ -277,7 +476,7 @@ class PetWindow:
         self.scheduler.schedule(
             "hover_wave",
             self.config.hover_delay_ms,
-            lambda: self.play("wave"),
+            self._hover_wave,
             group="hover",
         )
 
@@ -297,6 +496,10 @@ class PetWindow:
             return
         dx, dy = event.x - self.drag_origin[0], event.y - self.drag_origin[1]
         if abs(dx) + abs(dy) > 3:
+            if not self.dragged:
+                # Grabbing the pet is how you take it off a window; a plain
+                # click must not detach it.
+                self._leave_perch(fall=False)
             self.dragged = True
         x = self.root.winfo_x() + dx
         y = self.root.winfo_y() + dy
@@ -316,6 +519,7 @@ class PetWindow:
             self._release_throw()
             return
         self.play("click", priority=PRIORITY_USER)
+        self._play_sound("click")
         self.show_dialog(random.choice(self.config.messages))
 
     def _release_throw(self) -> None:
@@ -398,7 +602,7 @@ class PetWindow:
         dt = self.config.physics_interval_ms / 1000.0
         drive = self._drive_velocity()
         before_x = self.motion.x
-        self.motion, events = step(self.motion, dt, self.placement, self.config.physics, drive_vx=drive)
+        self.motion, events = step(self.motion, dt, self._active_bounds(), self.config.physics, drive_vx=drive)
         self._apply_motion()
         self._handle_motion_events(events, before_x)
         if self._should_keep_physics(drive):
@@ -442,6 +646,7 @@ class PetWindow:
         if events.landed:
             self._play_priority = PRIORITY_IDLE
             self.play(IDLE)
+            self._play_sound("land")
             return
         if self.walk_direction is None:
             return
@@ -452,8 +657,14 @@ class PetWindow:
             self.play("climb" if hit_wall else IDLE)
 
     def toggle_follow_mouse(self) -> None:
-        self.follow_mouse = bool(self.follow_var.get())
+        self.set_follow_mouse(not self.follow_mouse)
+
+    def set_follow_mouse(self, value: bool) -> None:
+        """Single entry point for the menu and the tray, so the two never drift."""
+        self.follow_mouse = bool(value)
+        self.follow_var.set(self.follow_mouse)
         self.store.set_setting("follow_mouse", "1" if self.follow_mouse else "0")
+        self.tray.set_tooltip(self._tray_tooltip())
         if not self.follow_mouse:
             self.play(IDLE)
             self.show_dialog("不跟了。")
@@ -511,9 +722,11 @@ class PetWindow:
         used_today = self.store.daily_count(item.id)
         refusal = item.refusal(self.state, used_today)
         if refusal is not None:
+            self._play_sound(sound_for_refusal())
             self.speak(DialogueContext(self.state, recovery=refusal))
             return False
         if self.scheduler.cooldown_remaining_ms(f"item:{item.id}") > 0:
+            self._play_sound(sound_for_refusal())
             self.speak(DialogueContext(self.state, recovery="wait"))
             return False
         return self.scheduler.schedule(
@@ -541,6 +754,7 @@ class PetWindow:
             },
         )
         self.play(item.animation or "happy", priority=PRIORITY_USER)
+        self._play_sound(sound_for_group(item.group))
         if outcome.levelled_up:
             self._announce_level_up(outcome.level_after)
         elif outcome.dialogue_key:
@@ -549,6 +763,7 @@ class PetWindow:
         return outcome
 
     def _announce_level_up(self, level: int) -> None:
+        self._play_sound("level_up")
         template = self.language_provider.reply(DialogueContext(self.state, recovery="level_up"))
         if template:
             self.show_dialog(template.format(title=affection_title(level)))
@@ -587,7 +802,12 @@ class PetWindow:
 
     def _refresh_status(self) -> None:
         stats = self.state.stats
-        ground = "地面" if self.motion.grounded else "空中"
+        if self.perched is not None:
+            ground = "窗口上"
+        elif self.motion.grounded:
+            ground = "地面"
+        else:
+            ground = "空中"
         remaining = affection_to_next_level(self.state.affection)
         progress = "已满" if remaining <= 0 else f"还差 {remaining:.0f}"
         self.status_text.set(
@@ -595,6 +815,7 @@ class PetWindow:
             f"心情　　{stats.mood:5.1f}\n"
             f"精力　　{stats.energy:5.1f}\n"
             f"好感度　{self.state.affection:5.1f}（{self.state.title}·{progress}）\n"
+            f"音效　　{'开' if self.sound_enabled else '关'}\n"
             f"位置　　{int(self.motion.x)}, {int(self.motion.y)}（{ground}）"
         )
 
@@ -626,11 +847,13 @@ class PetWindow:
         self.store.save(self.state)
         self.store.set_setting("scale", f"{self.scale:.2f}")
         self.store.set_setting("follow_mouse", "1" if self.follow_mouse else "0")
+        self.store.set_setting("sound", "1" if self.sound_enabled else "0")
 
     def close(self) -> None:
         self.scheduler.cancel_all()
         self.store.log_event("shutdown", self._stats_snapshot())
         self.persist_state()
+        self.tray.stop()
         self.dialog.destroy()
         self.status_window.destroy()
         self.root.destroy()

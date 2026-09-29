@@ -4,13 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "betty-pet"
-version = "0.1.0"
+version = "0.5.0"
 description = "A customizable Python desktop pet"
 requires-python = ">=3.10"
 dependencies = ["Pillow>=10.0"]
 
 [project.optional-dependencies]
 image-tools = ["numpy>=1.24", "opencv-python>=4.8"]
+# Window perching and the tray icon use pywin32 if it is present. Both degrade
+# gracefully without it, so it stays optional rather than a hard requirement.
+win32 = ["pywin32>=306"]
 dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [project.scripts]

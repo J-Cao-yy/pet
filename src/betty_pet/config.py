@@ -37,6 +37,11 @@ class AppConfig:
     chase_deadzone_px: float = 24.0
     hover_delay_ms: int = 800
     initial_margin_px: int = 40
+    perch_poll_ms: int = 500
+    tray_poll_ms: int = 250
+    # ``None`` means "no opinion": the stored setting wins. ``--sound`` /
+    # ``--no-sound`` set it explicitly and override the save file for one run.
+    sound_enabled: bool | None = None
 
     def clamp_scale(self, value: float) -> float:
         return max(self.min_scale, min(self.max_scale, round(value, 2)))

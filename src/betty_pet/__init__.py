@@ -1,6 +1,7 @@
 """Betty Pet: a customizable desktop pet built with Python and Tkinter."""
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
+from .audio import SOUND_KEYS, SilentPlayer, SoundPlayer
 from .behavior import (
     BehaviorAction,
     BehaviorRule,
@@ -9,6 +10,14 @@ from .behavior import (
     TemplateLanguageProvider,
     ThresholdBehaviorEngine,
     default_behavior_rules,
+)
+from .desktop import (
+    NullWindowProbe,
+    WindowProbe,
+    WindowRect,
+    Win32WindowProbe,
+    make_probe,
+    perch_bounds,
 )
 from .items import Item, ItemOutcome, apply_item, default_items, items_by_group
 from .movement import Direction, MovementPlan, MovementPlanner, chase_direction, horizontal_target
@@ -33,8 +42,12 @@ from .state import (
     affection_to_next_level,
 )
 from .store import MemoryStateStore, SQLiteStateStore, StateStore
+from .tray import NullTray, TrayAction, TrayIcon, make_tray
 
 __all__ = [
+    "SOUND_KEYS",
+    "SilentPlayer",
+    "SoundPlayer",
     "BehaviorAction",
     "BehaviorRule",
     "DialogueContext",
@@ -42,6 +55,12 @@ __all__ = [
     "TemplateLanguageProvider",
     "ThresholdBehaviorEngine",
     "default_behavior_rules",
+    "NullWindowProbe",
+    "WindowProbe",
+    "WindowRect",
+    "Win32WindowProbe",
+    "make_probe",
+    "perch_bounds",
     "Item",
     "ItemOutcome",
     "apply_item",
@@ -75,4 +94,8 @@ __all__ = [
     "MemoryStateStore",
     "SQLiteStateStore",
     "StateStore",
+    "NullTray",
+    "TrayAction",
+    "TrayIcon",
+    "make_tray",
 ]
