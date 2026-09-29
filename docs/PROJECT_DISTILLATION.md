@@ -179,6 +179,13 @@ class StateStore(Protocol):
 - 专注**只有坐满才算**：`_complete_focus()` 才给好感度和 `daily_usage` 的 `focus` 计数；`stop_focus()`（提前退出）什么都不给。这是这个功能存在的理由，不要"按比例折算"。
 - 专注的分组是 `focus`（倒计时任务），与 `behavior`（随机动作）分开：`_focus_quiet(True)` 取消 `behavior` 但不取消 `focus`。别把倒计时塞进 `behavior`，否则一安静就把自己停了。
 - 专注期间 `_chase_velocity()` 返回 `None`（不追鼠标）、`on_hover_enter()` 直接 return（不挥手）。想加新的"主动打扰"行为时记得也判一下 `self.focus_timer.active`。
+- **站立与吸附不是同一套物理**：地面是*承压*（重力把宠物压向表面），天花板/墙面是*吸附*（重力把它拉离表面，靠抓握留住）。所以**不要试图用坐标系旋转来统一两者**——旋转会把重力的方向一起转过去，吸附面在规范坐标里会变成"重力朝背离支撑边"。（`docs/CLIMBING_DESIGN.md` §3.1 记了这个错误。）
+- 吸附靠的是 `MotionState.surface` + `surface_bounds()`：把矩形压成**零厚度**，`step()` 原有的"吸附到 `bounds.bottom`、不许出框"就自动变成"钉在一条线上、可沿线滑动"。这是栖息那个"换 `Bounds`、不动物理"把戏的推广。
+- 吸附期间（`surface.clinging`）**必须跳过重力，并把 `grounded` 强制为真**。后者不是装饰：不这样做 `settled()` 永远为假，挂在墙上的宠物会让物理循环一直空转（和栖息同一个坑）。
+- 吸附期间**绝不能把 `y` 吸附到 `bounds.bottom`**，那是地面逻辑，对爬到一半的宠物用会把它瞬移到地面。代码里这两条是同一个 `if clinging / else` 的两支。
+- 抓握的阻尼用 `ground_friction` 而不是 `air_drag`：用空气阻力实测松手后还会滑行约 1.7 秒，抓握的手感应该是摩擦。
+- `attach()` 会置 `grounded=True`，否则第一帧会误报一次 `landed`（`tests/test_climbing.py` 里专门有一条反面测试记录这个）。
+- `drive_vy` 是爬墙新增的驱动轴。地面上宠物永远只需要 `drive_vx`；不要给地面状态顺手传 `drive_vy`。
 
 ## 9. 后续会话交接记录
 
