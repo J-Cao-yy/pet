@@ -1,18 +1,40 @@
-"""Pet domain state and recovery effects.
+"""Pet domain state: needs, affection and their passive decay.
 
 This module deliberately has no Tkinter dependency so it can be used by a
-future settings panel, scheduler, or local-model integration.
+future settings panel, scheduler, or local-model integration. Anything that
+*acts* on the state (items, dialogue) lives in :mod:`betty_pet.items`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Protocol
 
 
 def _clamp(value: float) -> float:
     return max(0.0, min(100.0, float(value)))
+
+
+AFFECTION_PER_LEVEL = 50.0
+
+AFFECTION_TITLES: tuple[str, ...] = ("陌生", "熟悉", "朋友", "好友", "亲密", "挚友")
+
+
+def affection_level(affection: float) -> int:
+    """Zero-based level index for an affection value, capped at the last title."""
+    return max(0, min(len(AFFECTION_TITLES) - 1, int(max(0.0, affection) // AFFECTION_PER_LEVEL)))
+
+
+def affection_title(level: int) -> str:
+    return AFFECTION_TITLES[max(0, min(len(AFFECTION_TITLES) - 1, level))]
+
+
+def affection_to_next_level(affection: float) -> float:
+    """How many more points until the next title, or 0 at the top level."""
+    level = affection_level(affection)
+    if level >= len(AFFECTION_TITLES) - 1:
+        return 0.0
+    return (level + 1) * AFFECTION_PER_LEVEL - max(0.0, affection)
 
 
 @dataclass
@@ -54,7 +76,10 @@ class PetStats:
 
 @dataclass
 class PetState:
+    """Needs plus the accumulated relationship, which never decays."""
+
     stats: PetStats = field(default_factory=PetStats)
+    affection: float = 0.0
     last_updated: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def update_elapsed(self, now: datetime | None = None) -> PetStats:
@@ -64,50 +89,16 @@ class PetState:
         self.last_updated = now
         return self.stats
 
+    def gain_affection(self, amount: float) -> int:
+        """Add affection and return the level index reached."""
+        if amount:
+            self.affection = max(0.0, self.affection + amount)
+        return affection_level(self.affection)
 
-@dataclass(frozen=True)
-class RecoveryResult:
-    method: str
-    changes: dict[str, float]
-    dialogue_key: str | None = None
+    @property
+    def level(self) -> int:
+        return affection_level(self.affection)
 
-
-class RecoveryMethod(Protocol):
-    """An injectable way to restore one or more pet stats."""
-
-    name: str
-
-    def can_use(self, state: PetState) -> bool: ...
-
-    def apply(self, state: PetState) -> RecoveryResult: ...
-
-
-@dataclass(frozen=True)
-class StatRecovery:
-    """Simple recovery implementation suitable for food, rest, or toys."""
-
-    name: str
-    hunger: float = 0.0
-    mood: float = 0.0
-    energy: float = 0.0
-    dialogue_key: str | None = None
-
-    def can_use(self, state: PetState) -> bool:
-        return any((self.hunger, self.mood, self.energy))
-
-    def apply(self, state: PetState) -> RecoveryResult:
-        if not self.can_use(state):
-            return RecoveryResult(self.name, {})
-        before = {
-            "hunger": state.stats.hunger,
-            "mood": state.stats.mood,
-            "energy": state.stats.energy,
-        }
-        state.stats.adjust(hunger=self.hunger, mood=self.mood, energy=self.energy)
-        changes = {
-            "hunger": state.stats.hunger - before["hunger"],
-            "mood": state.stats.mood - before["mood"],
-            "energy": state.stats.energy - before["energy"],
-        }
-        changes = {key: value for key, value in changes.items() if value}
-        return RecoveryResult(self.name, changes, self.dialogue_key)
+    @property
+    def title(self) -> str:
+        return affection_title(self.level)
