@@ -28,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-persist", action="store_true", help="本次运行不读写存档")
     parser.add_argument("--focus", action="store_true", help="启动后立刻开始一次专注")
     parser.add_argument("--focus-minutes", type=int, help="专注时长（分钟），默认 25")
+    parser.add_argument("--focus-rounds", type=int, help="一次专注跑几轮（每轮 = 专注 + 休息），默认 2")
     parser.add_argument("--status", action="store_true", help="打印存档状态与最近事件后退出")
     parser.add_argument("--autostart-status", action="store_true", help="显示开机自启状态后退出")
     parser.add_argument("--install-autostart", action="store_true", help="安装开机自启（写入「启动」文件夹）")
@@ -55,6 +56,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.focus_minutes < 1:
             raise SystemExit("--focus-minutes 至少为 1")
         config.focus_minutes = args.focus_minutes
+    if args.focus_rounds is not None:
+        if args.focus_rounds < 1:
+            raise SystemExit("--focus-rounds 至少为 1")
+        config.focus_rounds = args.focus_rounds
 
     catalog = AssetCatalog(config.asset_dir)
     missing = catalog.missing_files()

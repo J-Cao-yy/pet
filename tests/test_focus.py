@@ -135,3 +135,133 @@ def test_second_session_counts_again():
     assert timer.start() is True
     timer.tick(60_000)
     assert timer.completed_sessions == 2
+
+
+# -- several rounds ------------------------------------------------------------
+
+
+def test_rounds_default_to_the_original_single_cycle():
+    timer = FocusTimer(focus_ms=60_000, break_ms=10_000)
+    assert timer.rounds == 1
+    timer.start()
+    assert timer.tick(60_000) == FOCUS
+    assert timer.tick(10_000) == BREAK
+    assert timer.phase == IDLE
+
+
+def test_two_rounds_run_two_cycles_then_stop():
+    timer = FocusTimer(focus_ms=60_000, break_ms=10_000, rounds=2)
+    timer.start()
+    assert timer.tick(60_000) == FOCUS  # round 1 focus
+    assert timer.tick(10_000) == BREAK  # round 1 break rolls into round 2
+    assert timer.phase == FOCUS
+    assert timer.tick(60_000) == FOCUS  # round 2 focus
+    assert timer.tick(10_000) == BREAK  # round 2 break
+    assert timer.phase == IDLE
+    assert not timer.active
+    assert timer.completed_sessions == 2
+
+
+def test_the_final_break_still_happens():
+    """A round is a focus *plus* its break, including the last one."""
+    timer = FocusTimer(focus_ms=60_000, break_ms=10_000, rounds=2)
+    timer.start()
+    timer.tick(60_000)
+    timer.tick(10_000)
+    timer.tick(60_000)
+    assert timer.phase == BREAK
+    assert timer.rounds_remaining() == 0
+    assert timer.remaining_ms() == 10_000
+
+
+def test_rounds_remaining_counts_down():
+    timer = FocusTimer(focus_ms=60_000, break_ms=10_000, rounds=3)
+    timer.start()
+    assert timer.rounds_remaining() == 3
+    timer.tick(60_000)
+    assert timer.rounds_remaining() == 2
+
+
+def test_start_resets_the_round_counter():
+    timer = FocusTimer(focus_ms=60_000, break_ms=10_000, rounds=2)
+    timer.start()
+    timer.tick(60_000)
+    assert timer.rounds_done == 1
+    timer.tick(10_000)
+    timer.tick(60_000)
+    timer.stop()
+    assert timer.rounds_done == 0
+    timer.start()
+    assert timer.rounds_done == 0
+    assert timer.rounds_remaining() == 2
+
+
+def test_one_tick_still_advances_at_most_one_phase_across_rounds():
+    timer = FocusTimer(focus_ms=60_000, break_ms=10_000, rounds=3)
+    timer.start()
+    assert timer.tick(10_000_000) == FOCUS
+    assert timer.phase == BREAK
+    assert timer.completed_sessions == 1
+
+
+# -- long breaks ---------------------------------------------------------------
+
+
+def test_every_nth_break_is_a_long_one():
+    timer = FocusTimer(
+        focus_ms=60_000, break_ms=10_000, rounds=3, long_break_ms=30_000, long_break_every=2
+    )
+    timer.start()
+    timer.tick(60_000)
+    assert timer.break_is_long() is False  # after the 1st session
+    assert timer.duration_ms() == 10_000
+
+    timer.tick(10_000)
+    timer.tick(60_000)
+    assert timer.break_is_long() is True  # after the 2nd session
+    assert timer.duration_ms() == 30_000
+    assert timer.remaining_ms() == 30_000
+
+    timer.tick(30_000)
+    timer.tick(60_000)
+    assert timer.break_is_long() is False  # after the 3rd session
+    assert timer.duration_ms() == 10_000
+
+
+def test_long_break_cadence_counts_this_run_not_the_lifetime_total():
+    """A saved record must not decide how the next run paces its breaks."""
+    timer = FocusTimer(
+        focus_ms=60_000, break_ms=10_000, rounds=2, long_break_ms=30_000, long_break_every=2,
+        completed_sessions=4,  # survived a restart
+    )
+    timer.start()
+    timer.tick(60_000)
+    assert timer.break_is_long() is False
+    assert timer.duration_ms() == 10_000
+
+
+def test_long_breaks_can_be_disabled():
+    timer = FocusTimer(focus_ms=60_000, break_ms=10_000, long_break_ms=30_000, long_break_every=0)
+    timer.start()
+    timer.tick(60_000)
+    assert timer.break_is_long() is False
+    assert timer.duration_ms() == 10_000
+
+
+def test_a_long_break_without_a_duration_is_also_disabled():
+    timer = FocusTimer(focus_ms=60_000, break_ms=10_000, long_break_ms=0, long_break_every=2)
+    timer.start()
+    timer.tick(60_000)
+    timer.tick(10_000)
+    timer.tick(60_000)
+    assert timer.break_is_long() is False
+    assert timer.duration_ms() == 10_000
+
+
+def test_completed_sessions_can_be_seeded_from_the_save_file():
+    """The lifetime record survives a restart; it is handed back in here."""
+    timer = FocusTimer(focus_ms=60_000, completed_sessions=7)
+    assert timer.completed_sessions == 7
+    timer.start()
+    timer.tick(60_000)
+    assert timer.completed_sessions == 8

@@ -135,10 +135,20 @@ class PetWindow:
         self._perch_surface: Bounds | None = None
         self.hidden = False
 
-        # Focus sessions: the pet goes quiet and sits with the user.
+        # Focus sessions: the pet goes quiet and sits with the user. Several
+        # rounds may run back to back; every Nth break is a long one.
+        try:
+            saved_sessions = max(0, int(self.store.get_setting("focus_completed_total") or 0))
+        except ValueError:  # a hand-edited save must not stop the pet
+            saved_sessions = 0
         self.focus_timer = FocusTimer(
             focus_ms=config.focus_minutes * 60_000,
             break_ms=config.focus_break_minutes * 60_000,
+            rounds=config.focus_rounds,
+            long_break_ms=config.focus_long_break_minutes * 60_000,
+            long_break_every=config.focus_long_break_every,
+            # A lifetime record that resets on restart is not a record.
+            completed_sessions=saved_sessions,
         )
 
         self.behavior_engine = ThresholdBehaviorEngine(
@@ -164,7 +174,11 @@ class PetWindow:
                 "pet": ("呼噜呼噜。", "蹭蹭你的手。", "再来一下嘛。", "就知道你会来摸我。"),
                 "pet_limit": ("今天已经摸够啦，明天再来。", "再摸下去贝蒂要化掉了，明天见。"),
                 "level_up": ("好感度提升了！现在是「{title}」。", "我们更熟了一点，已经是「{title}」了。"),
-                "focus_start": ("这 {minutes} 分钟贝蒂陪你，专心做事吧。", "安静 {minutes} 分钟，我在这儿坐着。"),
+                "focus_start": (
+                    "开始 {rounds} 轮专注，每轮 {minutes} 分钟，贝蒂陪着你。",
+                    "接下来 {rounds} 轮 × {minutes} 分钟，我在这儿坐着。",
+                ),
+                "focus_next": ("下一轮，继续。", "还剩 {rounds} 轮，贝蒂在这儿。"),
                 "focus_done": ("专注完成，休息一下。", "这一段干得不错。"),
             }
         )
@@ -435,10 +449,17 @@ class PetWindow:
             return False
         self._focus_quiet(True)
         self._play_sound("focus_start")
-        self.store.log_event("focus_start", {"minutes": self.config.focus_minutes})
+        self.store.log_event(
+            "focus_start",
+            {
+                "minutes": self.config.focus_minutes,
+                "rounds": self.config.focus_rounds,
+            },
+        )
         self.speak(
             DialogueContext(self.state, recovery="focus_start"),
             minutes=self.config.focus_minutes,
+            rounds=self.config.focus_rounds,
         )
         self._refresh_status()
         self.scheduler.repeat(
@@ -456,10 +477,23 @@ class PetWindow:
 
     def _focus_tick(self) -> None:
         finished = self.focus_timer.tick(self.config.focus_poll_ms)
-        if finished == FOCUS:
-            self._complete_focus()
-        elif finished is not None:
+        if finished is None:
+            self._refresh_status()
+            return
+        if not self.focus_timer.active:
+            # The last break of the run just ended - back to normal life.
             self._end_focus()
+        elif finished == FOCUS:
+            self._complete_focus()
+        else:
+            # A break rolled into the next round. This is exactly the branch
+            # that did not exist when a run was one round: back then every BREAK
+            # meant "done", and stopping the tick here killed round two.
+            self._play_sound("focus_start")
+            self.speak(
+                DialogueContext(self.state, recovery="focus_next"),
+                rounds=self.focus_timer.rounds_remaining(),
+            )
         self._refresh_status()
 
     def _complete_focus(self) -> None:
@@ -469,10 +503,18 @@ class PetWindow:
         same as sitting through, or the session is just a button.
         """
         self.store.bump_daily("focus")
+        # The lifetime total survives a restart; the daily count does not, and
+        # neither should it - that is what makes it a daily count.
+        self.store.set_setting("focus_completed_total", str(self.focus_timer.completed_sessions))
         self._play_sound("focus_done")
         self.store.log_event(
             "focus",
-            {"minutes": self.config.focus_minutes, "affection": self.config.focus_affection},
+            {
+                "minutes": self.config.focus_minutes,
+                "affection": self.config.focus_affection,
+                "rounds_done": self.focus_timer.rounds_done,
+                "total": self.focus_timer.completed_sessions,
+            },
         )
         before = self.state.level
         self.state.gain_affection(self.config.focus_affection)
@@ -1404,8 +1446,13 @@ class PetWindow:
             else ""
         )
         if self.focus_timer.active:
-            label = "专注" if self.focus_timer.phase == FOCUS else "休息"
-            focus_line = f"{label}　　{format_mmss(self.focus_timer.remaining_ms())}\n"
+            if self.focus_timer.phase == FOCUS:
+                label = f"专注 {self.focus_timer.rounds_done + 1}/{self.focus_timer.rounds}"
+            elif self.focus_timer.break_is_long():
+                label = "长休"
+            else:
+                label = "休息"
+            focus_line = f"{label}　{format_mmss(self.focus_timer.remaining_ms())}\n"
         else:
             focus_line = ""
         self.status_text.set(

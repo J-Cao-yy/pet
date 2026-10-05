@@ -46,6 +46,12 @@ class AppConfig:
     focus_break_minutes: int = 5
     focus_poll_ms: int = 1_000
     focus_affection: float = 3.0
+    # A "专注" is now several focus/break rounds back to back. ``rounds = 1``
+    # is the original single-cycle behaviour; every ``long_break_every``-th
+    # break of a run is a long one (0 disables that).
+    focus_rounds: int = 2
+    focus_long_break_minutes: int = 15
+    focus_long_break_every: int = 2
     # Light interactions (see betty_pet.petting). A poke or a stroke earns a
     # little affection - the everyday-contact source the roadmap called out.
     # Both kinds share one daily cap, and a cooldown keeps clicking the pet
