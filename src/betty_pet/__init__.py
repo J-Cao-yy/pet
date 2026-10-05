@@ -22,6 +22,13 @@ from .desktop import (
 from .focus import BREAK, FOCUS, IDLE, FocusTimer, format_mmss
 from .items import Item, ItemOutcome, apply_item, default_items, items_by_group
 from .movement import Direction, MovementPlan, MovementPlanner, chase_direction, horizontal_target
+from .petting import (
+    CLICK,
+    STROKE,
+    PettingDecision,
+    PettingRules,
+    evaluate_petting,
+)
 from .physics import (
     Bounds,
     DragTracker,
@@ -81,6 +88,11 @@ __all__ = [
     "MovementPlanner",
     "chase_direction",
     "horizontal_target",
+    "CLICK",
+    "STROKE",
+    "PettingDecision",
+    "PettingRules",
+    "evaluate_petting",
     "Bounds",
     "DragTracker",
     "MotionEvents",

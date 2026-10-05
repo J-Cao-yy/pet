@@ -24,6 +24,7 @@ from .focus import FOCUS, FocusTimer, format_mmss
 from .items import GROUP_LABELS, Item, ItemOutcome, apply_item, default_items, items_by_group
 from .model import PetModel
 from .movement import MovementPlan, MovementPlanner, chase_direction, horizontal_target
+from .petting import CLICK, DAILY_KEY, STROKE, PettingRules, evaluate_petting
 from .physics import (
     Bounds,
     DragTracker,
@@ -121,6 +122,10 @@ class PetWindow:
             self.sound_enabled = (self.store.get_setting("sound") or "0") == "1"
         self.sound = SilentPlayer()
 
+        # Light interactions: when the pet was last poked or stroked, so the
+        # affection cooldown has something to measure. None = untouched this run.
+        self._last_petting: float | None = None
+
         # Window perching: the probe reports the foreground window, the pet
         # stands on its top edge. ``_last_window`` remembers the window the user
         # was looking at, because interacting with the pet steals focus.
@@ -156,6 +161,8 @@ class PetWindow:
                 "full": ("吃不下啦，肚子已经圆了。", "饱了饱了，等会儿再吃。"),
                 "limit": ("今天已经吃够了，明天再说吧。", "再吃就胖了。"),
                 "wait": ("等一下嘛，贝蒂还没缓过来。", "让我歇会儿。"),
+                "pet": ("呼噜呼噜。", "蹭蹭你的手。", "再来一下嘛。", "就知道你会来摸我。"),
+                "pet_limit": ("今天已经摸够啦，明天再来。", "再摸下去贝蒂要化掉了，明天见。"),
                 "level_up": ("好感度提升了！现在是「{title}」。", "我们更熟了一点，已经是「{title}」了。"),
                 "focus_start": ("这 {minutes} 分钟贝蒂陪你，专心做事吧。", "安静 {minutes} 分钟，我在这儿坐着。"),
                 "focus_done": ("专注完成，休息一下。", "这一段干得不错。"),
@@ -262,9 +269,66 @@ class PetWindow:
         except Exception:  # pragma: no cover - a broken player must not kill the pet
             pass
 
+    def _record_petting(self, kind: str) -> bool:
+        """A poke or a stroke: maybe affection, maybe a reason why not.
+
+        The whole policy (amounts, cooldown, daily cap) lives in
+        :func:`evaluate_petting` so tests can pin it without an event loop; this
+        method only applies the verdict and narrates it.
+
+        Returns ``True`` when the interaction has been **handled here** - either
+        affection was granted, or the daily cap was explained out loud. The
+        caller must not stack its own remark on top of an answer this method
+        already gave. A cooldown refusal returns ``False`` deliberately: staying
+        quiet and falling back to the ordinary reaction is the friendly option,
+        and nagging "冷却中" on every poke would be worse than silence.
+        """
+        if self.focus_timer.active:
+            # Focus means still and quiet; poking the cat mid-session would
+            # break the very thing the session is for.
+            return False
+        rules = PettingRules(
+            click_affection=self.config.pet_affection_click,
+            stroke_affection=self.config.pet_affection_stroke,
+            daily_limit=self.config.pet_affection_daily_limit,
+            cooldown_s=self.config.pet_affection_cooldown_ms / 1000.0,
+        )
+        now = time.monotonic()
+        seconds_since = None if self._last_petting is None else now - self._last_petting
+        decision = evaluate_petting(
+            kind,
+            used_today=self.store.daily_count(DAILY_KEY),
+            seconds_since_last=seconds_since,
+            rules=rules,
+        )
+        if not decision.granted:
+            if decision.reason == "limit":
+                self._play_sound(sound_for_refusal())
+                self.speak(DialogueContext(self.state, recovery="pet_limit"))
+                return True
+            return False
+
+        self._last_petting = now
+        self.store.bump_daily(DAILY_KEY)
+        before = self.state.level
+        self.state.gain_affection(decision.affection)
+        self.store.log_event(
+            "pet",
+            {"kind": kind, "affection": decision.affection, "today": decision.daily_count},
+        )
+        self._refresh_status()
+        if self.state.level > before:
+            self._announce_level_up(self.state.level)
+        else:
+            self.speak(DialogueContext(self.state, recovery="pet"))
+        return True
+
     def _hover_wave(self) -> None:
         self.play("wave")
         self._play_sound("wave")
+        # Lingering over the pet is a stroke. A refused stroke (cooldown or the
+        # daily cap) just stays a greeting, which is the right quiet fallback.
+        self._record_petting(STROKE)
 
     def toggle_sound(self) -> None:
         self.sound_enabled = bool(self.sound_var.get())
@@ -951,7 +1015,12 @@ class PetWindow:
             self._release_throw()
             return
         self.play("click", priority=PRIORITY_USER)
+        handled = self._record_petting(CLICK)
         self._play_sound("click")
+        if handled:
+            # The petting policy already answered (affection line, level-up
+            # announcement, or the daily-cap refusal); do not talk over it.
+            return
         self.show_dialog(random.choice(self.config.messages))
 
     def _release_throw(self) -> None:
@@ -1328,6 +1397,12 @@ class PetWindow:
             ground = "空中"
         remaining = affection_to_next_level(self.state.affection)
         progress = "已满" if remaining <= 0 else f"还差 {remaining:.0f}"
+        petted_today = self.store.daily_count(DAILY_KEY)
+        pet_line = (
+            f"轻抚　　今日 {petted_today}/{self.config.pet_affection_daily_limit}\n"
+            if self.config.pet_affection_daily_limit > 0
+            else ""
+        )
         if self.focus_timer.active:
             label = "专注" if self.focus_timer.phase == FOCUS else "休息"
             focus_line = f"{label}　　{format_mmss(self.focus_timer.remaining_ms())}\n"
@@ -1338,6 +1413,7 @@ class PetWindow:
             f"心情　　{stats.mood:5.1f}\n"
             f"精力　　{stats.energy:5.1f}\n"
             f"好感度　{self.state.affection:5.1f}（{self.state.title}·{progress}）\n"
+            f"{pet_line}"
             f"{focus_line}"
             f"音效　　{'开' if self.sound_enabled else '关'}\n"
             f"位置　　{int(self.motion.x)}, {int(self.motion.y)}（{ground}）"

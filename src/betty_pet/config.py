@@ -46,6 +46,14 @@ class AppConfig:
     focus_break_minutes: int = 5
     focus_poll_ms: int = 1_000
     focus_affection: float = 3.0
+    # Light interactions (see betty_pet.petting). A poke or a stroke earns a
+    # little affection - the everyday-contact source the roadmap called out.
+    # Both kinds share one daily cap, and a cooldown keeps clicking the pet
+    # from being an idle-clicker's dream.
+    pet_affection_click: float = 1.0
+    pet_affection_stroke: float = 2.0
+    pet_affection_daily_limit: int = 10
+    pet_affection_cooldown_ms: int = 60_000
     # Climbing (see docs/CLIMBING_DESIGN.md). ``wall_reach_px`` is how far inside
     # the screen edge the pet starts gripping: 0 means it will only climb when
     # its own corner is exactly on the edge, which the physics never quite
