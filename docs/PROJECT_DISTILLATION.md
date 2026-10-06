@@ -270,6 +270,7 @@ class StateStore(Protocol):
 - **专注多轮**：`FocusTimer` 支持 `rounds`（默认 2）与长休息（`long_break_every=2` 轮 → 15 分钟）；`completed_sessions` 读写 `focus_completed_total` 设置，跨重启接续。修掉一个真 bug：旧逻辑把**任何**休息结束都当成"整场结束"取消第二轮。测试 157→168 项。
 - **AI 占位帧试验成功**：用 `ImageGen` 以 `stand.png` 为参考生成 `dragged`（被拎起）一帧——**注意 `background:"transparent"` 不生效**（返回全不透明 RGB），需再走云抠图（matting）得到透明背景；成品 1024×1024 RGBA 接入 `assets/dragged.png` 并注册 manifest，回退链 `("dragged","climb","idle")` 未动。原始图与抠图存于 `input/ai/`。
 - **素材批量生成（琰 拍板"生成素材帧，现有的也可替换"）**：同一流水线再出 5 帧——`climb_wall_left`（贴玻璃壁虎式，右墙用 PIL 水平镜像免一单）、`walk_ceiling`（趴天花板俯视）、`fall`（惊慌下坠）、`thrown`（晕圈眼水平飞）、`happy`（替换头发黑白各半的 `Eat_enough.png`，原文件保留在 assets/ 不删）。两个坑：**并发生成会撞输出文件名互相覆盖**（fall 首张被 thrown 覆盖，重出；生成结果要及时改名）；wall cling 连试两次才摆脱"玻璃框边"。manifest 与 `assets.py` 的 `DEFAULT_MANIFEST` 已同步登记，全部动作 `resolve()==自身`、可播放，测试 168 项通过。
+- **第二帧批量补齐（琰："再多生成一点帧画面"）**：为 7 个单帧动作各生成"下一相位"帧（`*-1.png`）——关键做法是**用该动作自己的第一帧做 `image1` 参考**（而不是 `stand.png`），提示词强调"同姿势同机位同画风，仅动作相位前移"，一致性明显好于跨动作参考；`chase_mouse` 专属帧也补上（以 walk-left 为参考的前倾奔跑）。右墙第二帧仍为镜像。冒烟断言每个动作帧数（7 个 2 帧 + chase 1 帧）并逐一播放。注意 manifest 两处都要登记新帧——首轮就漏了 happy 的第二帧，被冒烟的帧数断言抓住。
 - 测试现为 **168 项**；本轮每个提交都用 `git archive` 独立验证过，攀爬两个提交已推送。
 - 碰撞边界只有主屏幕上下左右；任务栏高度靠 `floor_offset_px` 假设，多显示器未处理。
 - 物理动词缺专属素材（`fall` / `thrown` / `dragged` 三张 PNG），目前走回退链。
@@ -282,8 +283,9 @@ class StateStore(Protocol):
 "一份状态还是多份状态、存档怎么区分"随之作废。剩下真正卡脖子的是**素材**：
 
 - **攀爬素材**：已由 AI 流水线补齐（`climb_wall_left` / `climb_wall_right` / `walk_ceiling`，
-  加上 fall / thrown / dragged），manifest 登记即自动启用。剩余可做的是**多帧化**：
-  现在这些动作各只有 1 帧，AI 生成跨图角色一致性有限，逐帧要求"同姿势微动"需人工挑选，收益待验证。
+  加上 fall / thrown / dragged / chase_mouse）。第二帧也已到位：每个动作以自己的第一帧为
+  参考生成"下一相位"，两帧交替即可动起来；右墙第二帧继续用镜像免一单。剩余可做的是
+  更长的帧序列（3 帧以上需要更多人工挑选，收益递减）。
 - **音效素材**：先有音频（或允许我用程序合成占位音），再挂后端。素材比后端更卡脖子。
 
 `LanguageProvider` 与 `StateStore` 两个接口都已就位，接模型时不要改窗口类。

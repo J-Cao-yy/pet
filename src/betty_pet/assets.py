@@ -9,13 +9,15 @@ from PIL import Image
 DEFAULT_MANIFEST: dict[str, list[str]] = {
     "idle": ["stand.png", "stand-1.png", "stand-2.png", "stand-3.png"],
     "click": ["click.png"], "wave": ["hello.png"], "sleep": ["sleep.png"],
-    "happy": ["happy.png"], "sit": ["sit.png"], "climb": ["climb.png", "climb-1.png"],
+    "happy": ["happy.png", "happy-1.png"], "sit": ["sit.png"], "climb": ["climb.png", "climb-1.png"],
     "walk_left": ["walk-left.png", "walk-left-1.png", "walk-left-2.png", "walk-left-3.png", "walk-left-4.png"],
     "walk_right": ["walk-right.png", "walk-right-1.png", "walk-right-2.png"],
-    "dragged": ["dragged.png"],
-    "fall": ["fall.png"], "thrown": ["thrown.png"],
-    "climb_wall_left": ["climb_wall_left.png"], "climb_wall_right": ["climb_wall_right.png"],
-    "walk_ceiling": ["walk_ceiling.png"],
+    "dragged": ["dragged.png", "dragged-1.png"],
+    "fall": ["fall.png", "fall-1.png"], "thrown": ["thrown.png", "thrown-1.png"],
+    "climb_wall_left": ["climb_wall_left.png", "climb_wall_left-1.png"],
+    "climb_wall_right": ["climb_wall_right.png", "climb_wall_right-1.png"],
+    "walk_ceiling": ["walk_ceiling.png", "walk_ceiling-1.png"],
+    "chase_mouse": ["chase_mouse.png"],
     "wipe_mouth": ["wipe mouth.png"],
 }
 
@@ -59,11 +61,10 @@ class AssetCatalog:
     def resolve(self, action: str) -> str:
         """Map a semantic action onto the closest animation that actually exists.
 
-        Physics and interaction verbs (``fall`` / ``thrown`` / ``dragged`` /
-        ``chase_mouse``) have no art yet. Resolving through
-        :data:`ACTION_FALLBACKS` keeps the pet animated with a stand-in frame
-        until the matching PNGs land in the manifest, instead of freezing on
-        the last one.
+        Every verb in :data:`ACTION_FALLBACKS` now has dedicated art, but the
+        chain still guards against a manifest missing an entry (for example a
+        custom asset dir): resolving through the fallback keeps the pet
+        animated with a stand-in frame instead of freezing on the last one.
         """
         for candidate in ACTION_FALLBACKS.get(action, (action,)):
             if candidate in self.manifest:

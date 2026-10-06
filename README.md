@@ -173,9 +173,8 @@ output/           png_process.py 的处理结果
 
 新增动作时，在 `assets/manifest.json` 增加动作名和 PNG 文件列表即可。
 
-物理与交互动词的专属素材（`dragged` / `fall` / `thrown`，以及攀爬三向）已由
-「AI 生成 → 云抠图」流水线补齐，`chase_mouse` 仍按 `assets.py` 的 `ACTION_FALLBACKS`
-回退到行走帧。
+物理与交互动词的专属素材（`dragged` / `fall` / `thrown` / `chase_mouse`，以及攀爬三向）
+已由「AI 生成 → 云抠图」流水线补齐，且多数动作有两帧可交替播放。
 
 流水线记录（复用要点）：ImageGen 以 `stand.png` 做角色参考（`input_fidelity: high`），
 **`background:"transparent"` 参数不生效**——返回全不透明 RGB，必须再走云抠图得到透明
