@@ -2,7 +2,7 @@
 
 一个以 Python/Tkinter 为基础的高自定义桌宠原型。当前支持透明置顶窗口、重力与投掷物理、跟随鼠标、
 拖拽、右键菜单、缩放、随机动作、对话气泡、SQLite 存档、按 manifest 管理动画素材、窗口栖息、
-沿墙与天花板攀爬、系统托盘和专注计时。
+沿墙与天花板攀爬、系统托盘、专注计时和音效（winsound 后端 + 合成占位音）。
 
 ## 交互
 
@@ -108,9 +108,14 @@ python main.py --uninstall-autostart     # 删掉它
 
 ## 音效
 
-音效目前只有**抽象层**：`src/betty_pet/audio.py` 定义了 `SoundPlayer` 协议、语义键位和事件映射，
-默认实现是 `SilentPlayer`（只记录不发声）。菜单里的「音效」开关和 `--sound` / `--no-sound` 都已经能用，
-但**打开也听不到声音**——既没有播放后端，也还没有音频素材。
+音效已**能出声**：`src/betty_pet/audio.py` 提供 `SoundPlayer` 协议与语义键位；
+Windows 上默认用 `WinsoundPlayer`（标准库 `winsound`，异步播放 `assets/sounds/<key>.wav`，
+不阻塞 UI，缺文件静默跳过），非 Windows 自动回退到只记录不发声的 `SilentPlayer`。
+菜单「音效」开关和 `--sound` / `--no-sound` 控制开关。
+
+现在的 11 个音色是**程序合成的占位音**（`tools/synth_sfx.py`，纯标准库，可改参数重新
+生成）：点按是短促的"嗒"、拒绝是低沉的"womp womp"、升级是四音小号角、专注开始/结束
+各有温柔的和弦。想要真音效，用同名 WAV 覆盖 `assets/sounds/` 里的文件即可，不用改代码。
 
 要真正响起来需要两步：一个后端（实现 `SoundPlayer.play(key)` 即可，调用点不用改），以及一批音频文件。
 
@@ -153,7 +158,7 @@ src/betty_pet/
   movement.py     移动计划、边界目标与追鼠标方向
   physics.py      重力、摩擦、阻尼反弹、拖拽投掷速度、贴合面（Surface）
   desktop.py      探测前台窗口，把窗口上沿折算成栖息面
-  audio.py        音效协议与静音实现（键位已定，后端待接）
+  audio.py        音效协议、静音实现与 winsound 后端（键位即接口）
   tray.py         pywin32 自绘托盘图标（无依赖时自动降级）
   autostart.py    开机自启启动器的生成与安装（仅显式命令调用）
   scheduler.py    定时器调度（优先级、分组取消、冷却）

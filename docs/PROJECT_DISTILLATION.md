@@ -33,13 +33,14 @@ Betty Pet 是一个运行在 Windows 桌面的轻量级 2D 桌宠原型。它的
 | 悬停反应 | 停留 0.8 秒触发挥手 | `window.py`、`config.py` |
 | 窗口栖息 | 站到前台窗口上沿；随窗口移动/缩放跟随；窗口关闭、最小化或顶到屏幕顶部即掉落回地面 | `desktop.py`、`window.py` |
 | 沿墙 / 天花板攀爬 | 走到屏幕边缘自动抓墙；沿墙爬（墙是 60px 宽的带，可横向挪动、顶到内缘才掉）、翻顶到天花板横穿、下另一侧墙；拖拽/投掷打断。攀爬三向与 fall/thrown/dragged 均有 AI 生成帧 | `physics.py`（`Surface`）、`window.py`、`docs/CLIMBING_DESIGN.md` |
-| 音效 | `SoundPlayer` 抽象 + 默认静音实现；事件键位、菜单开关、CLI 覆盖就位，**尚未接播放后端** | `src/betty_pet/audio.py` |
+| 音效 | `SoundPlayer` 抽象 + `WinsoundPlayer` 真后端（Windows 标准库，播 `assets/sounds/<key>.wav`，异步、缺文件静默）；11 个键位各有程序合成的占位音色（`tools/synth_sfx.py` 可重新生成） | `src/betty_pet/audio.py`、`tools/synth_sfx.py` |
 | 系统托盘 | pywin32 自绘图标（零新依赖）；显示/隐藏、跟随鼠标、退出；动作经队列回投主线程 | `src/betty_pet/tray.py` |
 | 开机自启 | `--install-autostart` / `--uninstall-autostart` 写入「启动」文件夹的 `.vbs`（无窗口启动） | `src/betty_pet/autostart.py`、`__main__.py` |
 
-边界仍然清楚：**音效只有抽象层、没有播放后端；没有道具数量与货币；没有多角色/皮肤；
+边界仍然清楚：**没有道具数量与货币；没有多角色/皮肤；
 没有本地模型对话；没有多实例（琰 明确说不做）。**攀爬与物理动词的素材已由
-"AI 生成 → 云抠图"流水线补齐（含替换不一致的 happy 帧）；chase_mouse 仍回退到行走帧。
+"AI 生成 → 云抠图"流水线补齐（含替换不一致的 happy 帧）；音效已有 winsound 后端与
+程序合成占位音，等真素材替换 WAV 即可。
 同类项目的横向对比与借鉴顺序见
 [现有桌宠项目调研](EXTERNAL_REFERENCES.md)。
 
@@ -258,7 +259,7 @@ class StateStore(Protocol):
 - 道具没有数量、没有货币、没有解锁条件。刻意如此：没有"打工赚钱→买道具"的循环时，数量只会变成一个再也回不来的数字，读起来像 bug 而不是机制。
 - 好感度现在有三个来源（道具、坐满专注、点按/抚摸轻交互），但"长时间陪伴"这类被动积累还没有。
 - 专注已支持多轮循环、长休息与累计轮次落库；还没有"今日专注汇总"这类统计展示，轮次/长休息也不能在菜单里临时改（要改得动 `config` 或 CLI）。
-- **音效只有抽象层与静音实现**：开关打开也没有声音——缺播放后端，也缺音频素材（`assets/` 里一个音频文件都没有，manifest 也没有音频段）。
+- 音效已出声（winsound 后端 + 11 个合成占位音色），但占位音是程序合成的"电子味"，真素材（录音或更好的音色库）仍待替换；`winsound` 不支持音量与淡出，想要这些得换 `pygame.mixer`。
 - 托盘用的是系统默认图标，没有自己的 `.ico`；托盘菜单里还没有「跳到窗口」这类入口。
 - 栖息只认主屏幕边界，且拒绝最大化窗口；多显示器未处理。开机自启的命令写好了但**没执行过**，真机开机验证待做。
 - 没有多角色皮肤。沿墙与天花板攀爬**已落地**（`b063c72` + 窗口层 + 墙面读法 B），攀爬三向、fall / thrown / dragged 专属素材也已补齐（AI 生成 → 云抠图）。**多实例已由琰决定不做**（"一个就够了"）。
@@ -271,6 +272,16 @@ class StateStore(Protocol):
 - **AI 占位帧试验成功**：用 `ImageGen` 以 `stand.png` 为参考生成 `dragged`（被拎起）一帧——**注意 `background:"transparent"` 不生效**（返回全不透明 RGB），需再走云抠图（matting）得到透明背景；成品 1024×1024 RGBA 接入 `assets/dragged.png` 并注册 manifest，回退链 `("dragged","climb","idle")` 未动。原始图与抠图存于 `input/ai/`。
 - **素材批量生成（琰 拍板"生成素材帧，现有的也可替换"）**：同一流水线再出 5 帧——`climb_wall_left`（贴玻璃壁虎式，右墙用 PIL 水平镜像免一单）、`walk_ceiling`（趴天花板俯视）、`fall`（惊慌下坠）、`thrown`（晕圈眼水平飞）、`happy`（替换头发黑白各半的 `Eat_enough.png`，原文件保留在 assets/ 不删）。两个坑：**并发生成会撞输出文件名互相覆盖**（fall 首张被 thrown 覆盖，重出；生成结果要及时改名）；wall cling 连试两次才摆脱"玻璃框边"。manifest 与 `assets.py` 的 `DEFAULT_MANIFEST` 已同步登记，全部动作 `resolve()==自身`、可播放，测试 168 项通过。
 - **第二帧批量补齐（琰："再多生成一点帧画面"）**：为 7 个单帧动作各生成"下一相位"帧（`*-1.png`）——关键做法是**用该动作自己的第一帧做 `image1` 参考**（而不是 `stand.png`），提示词强调"同姿势同机位同画风，仅动作相位前移"，一致性明显好于跨动作参考；`chase_mouse` 专属帧也补上（以 walk-left 为参考的前倾奔跑）。右墙第二帧仍为镜像。冒烟断言每个动作帧数（7 个 2 帧 + chase 1 帧）并逐一播放。注意 manifest 两处都要登记新帧——首轮就漏了 happy 的第二帧，被冒烟的帧数断言抓住。
+- **音效**（原"只有抽象层"）：`audio.py` 新增 `WinsoundPlayer`——Windows 标准库 `winsound`，
+  播 `assets/sounds/<key>.wav`（`SND_ASYNC` 不阻塞 UI、缺文件静默跳过、非 Windows 回退
+  `SilentPlayer`）。`tools/synth_sfx.py`（纯标准库）为 11 个键位合成占位音色：正弦+二次
+  谐波+指数衰减包络，一个事件一个乐思（拒绝是"womp womp"、升级是四音号角、落地是低频闷响）。
+  窗口层 `self.sound`（记录器，测试依赖）与 `self.sound_fx`（发声）并行，`_play_sound` 各自
+  包 try。替换真录音时同名覆盖 WAV 即可，不动代码。
+- **两个新表现动作**：`level_up`（星星眼跳跃+彩带）与 `refuse`（摊手摇头+闭眼噘嘴），走同一
+  AI 流水线；`_announce_level_up()` 与三处拒绝（道具满/冷却、抚摸超限）现在都先做动作再说话。
+  回退链 `level_up→happy→idle`、`refuse→click→idle`。
+- 测试 168→172 项（新增 winsound 后端 4 项：键到文件映射、缺文件跳过、工厂选择、无 winsound 回退）。
 - 测试现为 **168 项**；本轮每个提交都用 `git archive` 独立验证过，攀爬两个提交已推送。
 - 碰撞边界只有主屏幕上下左右；任务栏高度靠 `floor_offset_px` 假设，多显示器未处理。
 - 物理动词缺专属素材（`fall` / `thrown` / `dragged` 三张 PNG），目前走回退链。
@@ -286,6 +297,7 @@ class StateStore(Protocol):
   加上 fall / thrown / dragged / chase_mouse）。第二帧也已到位：每个动作以自己的第一帧为
   参考生成"下一相位"，两帧交替即可动起来；右墙第二帧继续用镜像免一单。剩余可做的是
   更长的帧序列（3 帧以上需要更多人工挑选，收益递减）。
-- **音效素材**：先有音频（或允许我用程序合成占位音），再挂后端。素材比后端更卡脖子。
+- **音效真素材**：后端与占位音已就位，替换 `assets/sounds/*.wav`（同名）即生效，或改
+  `tools/synth_sfx.py` 的音色参数重新生成。
 
 `LanguageProvider` 与 `StateStore` 两个接口都已就位，接模型时不要改窗口类。
