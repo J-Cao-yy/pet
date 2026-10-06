@@ -8,3 +8,4 @@ build/
 *.egg-info/
 .idea/
 
+pytest_out.txt

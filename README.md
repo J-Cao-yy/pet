@@ -86,9 +86,8 @@
 交给原来的物理步进，"不许出框"就自动变成了"钉在带上、沿线滑动"。
 攀爬期间跳过重力（挂着不是踩着），阻尼改用地面摩擦，所以松手是"停下"而不是"滑翔"。
 
-**素材上还在将就**：`assets/` 里还没有沿墙/天花板的专属帧，现在沿墙用的是 `climb` 那一帧、
-天花板上是"站着平移"。往 `manifest.json` 里写上 `climb_wall_left` / `climb_wall_right` /
-`walk_ceiling` 并放上 PNG 就会自动启用，回退链不用改。完整设计与踩坑见
+**素材已配齐**：沿墙（`climb_wall_left` / `climb_wall_right`，左右两帧互为镜像）、
+天花板（`walk_ceiling`）都有专属帧，由 AI 生成后抠图接入。完整设计与踩坑见
 [攀爬设计草案](docs/CLIMBING_DESIGN.md)。
 
 ## 系统托盘与开机自启
@@ -174,17 +173,15 @@ output/           png_process.py 的处理结果
 
 新增动作时，在 `assets/manifest.json` 增加动作名和 PNG 文件列表即可。
 
-物理与交互动词（`fall` / `thrown` / `chase_mouse`）目前没有专属素材，会按
-`assets.py` 的 `ACTION_FALLBACKS` 回退到现有动作，因此不加素材也能正常运行。
-想让它更准确，往 `assets/` 放图并写进 manifest 即可，**不需要改代码**：
-`fall.png`（下落）、`thrown.png`（被扔飞）。
+物理与交互动词的专属素材（`dragged` / `fall` / `thrown`，以及攀爬三向）已由
+「AI 生成 → 云抠图」流水线补齐，`chase_mouse` 仍按 `assets.py` 的 `ACTION_FALLBACKS`
+回退到行走帧。
 
-`dragged`（被拎起）已有一帧 AI 生成的占位素材（`assets/dragged.png`）：先用 ImageGen
-以 `stand.png` 为参考生成，再走云抠图去掉背景（`background:"transparent"` 参数不生效，
-返回的是全不透明 RGB）。原始图与抠图在 `input/ai/`，其余动作帧可复用这条流水线。
-
-沿墙与天花板同理：`climb_wall_left` / `climb_wall_right` 回退到 `climb`，`walk_ceiling`
-回退到 `walk_left`。放上对应 PNG 并写进 manifest 就会自动启用。
+流水线记录（复用要点）：ImageGen 以 `stand.png` 做角色参考（`input_fidelity: high`），
+**`background:"transparent"` 参数不生效**——返回全不透明 RGB，必须再走云抠图得到透明
+背景；并发生成会给不同图起同一个输出文件名、互相覆盖，**每张生成后立即改名**；
+提示词里要明确「无玻璃框/无边框/纯白底」，否则模型会给贴墙姿势画上一个玻璃板。
+原始图与抠图中间产物在 `input/ai/`。
 
 ## 延伸阅读
 

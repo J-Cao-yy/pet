@@ -1,10 +1,13 @@
 {
   "idle": ["stand.png", "stand-1.png", "stand-2.png", "stand-3.png"],
   "click": ["click.png"], "wave": ["hello.png"], "sleep": ["sleep.png"],
-  "happy": ["Eat_enough.png"], "sit": ["sit.png"], "climb": ["climb.png", "climb-1.png"],
+  "happy": ["happy.png"], "sit": ["sit.png"], "climb": ["climb.png", "climb-1.png"],
   "walk_left": ["walk-left.png", "walk-left-1.png", "walk-left-2.png", "walk-left-3.png", "walk-left-4.png"],
   "walk_right": ["walk-right.png", "walk-right-1.png", "walk-right-2.png"],
   "dragged": ["dragged.png"],
+  "fall": ["fall.png"], "thrown": ["thrown.png"],
+  "climb_wall_left": ["climb_wall_left.png"], "climb_wall_right": ["climb_wall_right.png"],
+  "walk_ceiling": ["walk_ceiling.png"],
   "wipe_mouth": ["wipe mouth.png"]
 }
 

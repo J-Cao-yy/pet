@@ -32,14 +32,15 @@ Betty Pet 是一个运行在 Windows 桌面的轻量级 2D 桌宠原型。它的
 | 追鼠标 | 死区防抖，朝光标行走，开关写入存档 | `physics.py`、`movement.py`、`window.py` |
 | 悬停反应 | 停留 0.8 秒触发挥手 | `window.py`、`config.py` |
 | 窗口栖息 | 站到前台窗口上沿；随窗口移动/缩放跟随；窗口关闭、最小化或顶到屏幕顶部即掉落回地面 | `desktop.py`、`window.py` |
-| 沿墙 / 天花板攀爬 | 走到屏幕边缘自动抓墙；沿墙爬（墙是 60px 宽的带，可横向挪动、顶到内缘才掉）、翻顶到天花板横穿、下另一侧墙；拖拽/投掷打断。**缺专属素材，走回退链** | `physics.py`（`Surface`）、`window.py`、`docs/CLIMBING_DESIGN.md` |
+| 沿墙 / 天花板攀爬 | 走到屏幕边缘自动抓墙；沿墙爬（墙是 60px 宽的带，可横向挪动、顶到内缘才掉）、翻顶到天花板横穿、下另一侧墙；拖拽/投掷打断。攀爬三向与 fall/thrown/dragged 均有 AI 生成帧 | `physics.py`（`Surface`）、`window.py`、`docs/CLIMBING_DESIGN.md` |
 | 音效 | `SoundPlayer` 抽象 + 默认静音实现；事件键位、菜单开关、CLI 覆盖就位，**尚未接播放后端** | `src/betty_pet/audio.py` |
 | 系统托盘 | pywin32 自绘图标（零新依赖）；显示/隐藏、跟随鼠标、退出；动作经队列回投主线程 | `src/betty_pet/tray.py` |
 | 开机自启 | `--install-autostart` / `--uninstall-autostart` 写入「启动」文件夹的 `.vbs`（无窗口启动） | `src/betty_pet/autostart.py`、`__main__.py` |
 
 边界仍然清楚：**音效只有抽象层、没有播放后端；没有道具数量与货币；没有多角色/皮肤；
-没有本地模型对话；没有多实例（琰 明确说不做）。** 攀爬与天花板已落地但缺专属素材，暂时走
-回退链。同类项目的横向对比与借鉴顺序见
+没有本地模型对话；没有多实例（琰 明确说不做）。**攀爬与物理动词的素材已由
+"AI 生成 → 云抠图"流水线补齐（含替换不一致的 happy 帧）；chase_mouse 仍回退到行走帧。
+同类项目的横向对比与借鉴顺序见
 [现有桌宠项目调研](EXTERNAL_REFERENCES.md)。
 
 ## 3. 建议的目标架构
@@ -260,7 +261,7 @@ class StateStore(Protocol):
 - **音效只有抽象层与静音实现**：开关打开也没有声音——缺播放后端，也缺音频素材（`assets/` 里一个音频文件都没有，manifest 也没有音频段）。
 - 托盘用的是系统默认图标，没有自己的 `.ico`；托盘菜单里还没有「跳到窗口」这类入口。
 - 栖息只认主屏幕边界，且拒绝最大化窗口；多显示器未处理。开机自启的命令写好了但**没执行过**，真机开机验证待做。
-- 没有多角色皮肤。沿墙与天花板攀爬**已落地**（`b063c72` + 窗口层 + 墙面读法 B），但仍缺专属素材，现在走回退链。**多实例已由琰决定不做**（"一个就够了"）。
+- 没有多角色皮肤。沿墙与天花板攀爬**已落地**（`b063c72` + 窗口层 + 墙面读法 B），攀爬三向、fall / thrown / dragged 专属素材也已补齐（AI 生成 → 云抠图）。**多实例已由琰决定不做**（"一个就够了"）。
 
 **已完成（本轮会话：攀爬读法 B → 轻交互好感度 → 专注多轮 → AI 占位帧试验）**
 
@@ -268,6 +269,7 @@ class StateStore(Protocol):
 - **轻交互·好感度**：新增 `src/betty_pet/petting.py`（纯策略，无 Tkinter）——`evaluate_petting()` 统一判定点按（+1）与抚摸（+2），每日 10 次上限 + 60 秒冷却双重防刷；上限/冷却各有台词且 `_record_petting()` 返回"已处理"避免台词叠加（冒烟抓到的真 bug）。测试 148→157 项。
 - **专注多轮**：`FocusTimer` 支持 `rounds`（默认 2）与长休息（`long_break_every=2` 轮 → 15 分钟）；`completed_sessions` 读写 `focus_completed_total` 设置，跨重启接续。修掉一个真 bug：旧逻辑把**任何**休息结束都当成"整场结束"取消第二轮。测试 157→168 项。
 - **AI 占位帧试验成功**：用 `ImageGen` 以 `stand.png` 为参考生成 `dragged`（被拎起）一帧——**注意 `background:"transparent"` 不生效**（返回全不透明 RGB），需再走云抠图（matting）得到透明背景；成品 1024×1024 RGBA 接入 `assets/dragged.png` 并注册 manifest，回退链 `("dragged","climb","idle")` 未动。原始图与抠图存于 `input/ai/`。
+- **素材批量生成（琰 拍板"生成素材帧，现有的也可替换"）**：同一流水线再出 5 帧——`climb_wall_left`（贴玻璃壁虎式，右墙用 PIL 水平镜像免一单）、`walk_ceiling`（趴天花板俯视）、`fall`（惊慌下坠）、`thrown`（晕圈眼水平飞）、`happy`（替换头发黑白各半的 `Eat_enough.png`，原文件保留在 assets/ 不删）。两个坑：**并发生成会撞输出文件名互相覆盖**（fall 首张被 thrown 覆盖，重出；生成结果要及时改名）；wall cling 连试两次才摆脱"玻璃框边"。manifest 与 `assets.py` 的 `DEFAULT_MANIFEST` 已同步登记，全部动作 `resolve()==自身`、可播放，测试 168 项通过。
 - 测试现为 **168 项**；本轮每个提交都用 `git archive` 独立验证过，攀爬两个提交已推送。
 - 碰撞边界只有主屏幕上下左右；任务栏高度靠 `floor_offset_px` 假设，多显示器未处理。
 - 物理动词缺专属素材（`fall` / `thrown` / `dragged` 三张 PNG），目前走回退链。
@@ -279,10 +281,9 @@ class StateStore(Protocol):
 详见 [攀爬设计草案](CLIMBING_DESIGN.md)。**多实例已由琰决定不做**，原本要定的
 "一份状态还是多份状态、存档怎么区分"随之作废。剩下真正卡脖子的是**素材**：
 
-- **攀爬素材**：`assets/` 里缺 `climb_wall_left` / `climb_wall_right` / `walk_ceiling`，
-  现在分别回退到 `climb` 与 `walk_left`。往 `manifest.json` 写进动作名并放上 PNG 即自动启用，
-  回退链不用改；沿墙时看到的是 `climb` 那一帧、天花板上是"站着平移"，琰 已接受这个代价。
-  AI 生成 → 云抠图 的流水线已在 `dragged` 一帧上验证可行（见上文），剩余动作帧可复用同一条路。
+- **攀爬素材**：已由 AI 流水线补齐（`climb_wall_left` / `climb_wall_right` / `walk_ceiling`，
+  加上 fall / thrown / dragged），manifest 登记即自动启用。剩余可做的是**多帧化**：
+  现在这些动作各只有 1 帧，AI 生成跨图角色一致性有限，逐帧要求"同姿势微动"需人工挑选，收益待验证。
 - **音效素材**：先有音频（或允许我用程序合成占位音），再挂后端。素材比后端更卡脖子。
 
 `LanguageProvider` 与 `StateStore` 两个接口都已就位，接模型时不要改窗口类。
