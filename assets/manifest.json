@@ -4,6 +4,7 @@
   "happy": ["Eat_enough.png"], "sit": ["sit.png"], "climb": ["climb.png", "climb-1.png"],
   "walk_left": ["walk-left.png", "walk-left-1.png", "walk-left-2.png", "walk-left-3.png", "walk-left-4.png"],
   "walk_right": ["walk-right.png", "walk-right-1.png", "walk-right-2.png"],
+  "dragged": ["dragged.png"],
   "wipe_mouth": ["wipe mouth.png"]
 }
 

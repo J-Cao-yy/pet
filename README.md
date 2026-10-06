@@ -174,10 +174,14 @@ output/           png_process.py 的处理结果
 
 新增动作时，在 `assets/manifest.json` 增加动作名和 PNG 文件列表即可。
 
-物理与交互动词（`fall` / `thrown` / `dragged` / `chase_mouse`）目前没有专属素材，会按
+物理与交互动词（`fall` / `thrown` / `chase_mouse`）目前没有专属素材，会按
 `assets.py` 的 `ACTION_FALLBACKS` 回退到现有动作，因此不加素材也能正常运行。
-想让它更准确，往 `assets/` 放这三张图并写进 manifest 即可，**不需要改代码**：
-`fall.png`（下落）、`thrown.png`（被扔飞）、`dragged.png`（被拎起）。
+想让它更准确，往 `assets/` 放图并写进 manifest 即可，**不需要改代码**：
+`fall.png`（下落）、`thrown.png`（被扔飞）。
+
+`dragged`（被拎起）已有一帧 AI 生成的占位素材（`assets/dragged.png`）：先用 ImageGen
+以 `stand.png` 为参考生成，再走云抠图去掉背景（`background:"transparent"` 参数不生效，
+返回的是全不透明 RGB）。原始图与抠图在 `input/ai/`，其余动作帧可复用这条流水线。
 
 沿墙与天花板同理：`climb_wall_left` / `climb_wall_right` 回退到 `climb`，`walk_ceiling`
 回退到 `walk_left`。放上对应 PNG 并写进 manifest 就会自动启用。
