@@ -11,7 +11,7 @@ from tkinter import Menu, messagebox
 from PIL import ImageTk
 
 from .assets import AssetCatalog
-from .audio import SilentPlayer, sound_for_group, sound_for_refusal
+from .audio import SilentPlayer, make_sound_player, sound_for_group, sound_for_refusal
 from .behavior import (
     DialogueContext,
     TemplateLanguageProvider,
@@ -114,13 +114,15 @@ class PetWindow:
         self.climb_remaining = 0.0
         self.climb_lean: str | None = None
 
-        # Effects are silent for now; the switch and the call sites exist so a
-        # real backend is a drop-in (see betty_pet.audio).
+        # ``self.sound`` always records (tests and the status of what *would*
+        # have played); ``self.sound_fx`` actually makes noise where a backend
+        # exists (winsound on Windows), gated by the same on/off switch.
         if config.sound_enabled is not None:
             self.sound_enabled = config.sound_enabled
         else:
             self.sound_enabled = (self.store.get_setting("sound") or "0") == "1"
         self.sound = SilentPlayer()
+        self.sound_fx = make_sound_player(config.asset_dir / "sounds")
 
         # Light interactions: when the pet was last poked or stroked, so the
         # affection cooldown has something to measure. None = untouched this run.
@@ -282,6 +284,10 @@ class PetWindow:
             self.sound.play(key)
         except Exception:  # pragma: no cover - a broken player must not kill the pet
             pass
+        try:
+            self.sound_fx.play(key)
+        except Exception:  # pragma: no cover - same: decoration must not crash
+            pass
 
     def _record_petting(self, kind: str) -> bool:
         """A poke or a stroke: maybe affection, maybe a reason why not.
@@ -318,6 +324,7 @@ class PetWindow:
         if not decision.granted:
             if decision.reason == "limit":
                 self._play_sound(sound_for_refusal())
+                self.play("refuse", priority=PRIORITY_USER)
                 self.speak(DialogueContext(self.state, recovery="pet_limit"))
                 return True
             return False
@@ -1342,10 +1349,12 @@ class PetWindow:
         refusal = item.refusal(self.state, used_today)
         if refusal is not None:
             self._play_sound(sound_for_refusal())
+            self.play("refuse", priority=PRIORITY_USER)
             self.speak(DialogueContext(self.state, recovery=refusal))
             return False
         if self.scheduler.cooldown_remaining_ms(f"item:{item.id}") > 0:
             self._play_sound(sound_for_refusal())
+            self.play("refuse", priority=PRIORITY_USER)
             self.speak(DialogueContext(self.state, recovery="wait"))
             return False
         return self.scheduler.schedule(
@@ -1383,6 +1392,7 @@ class PetWindow:
 
     def _announce_level_up(self, level: int) -> None:
         self._play_sound("level_up")
+        self.play("level_up", priority=PRIORITY_USER)
         self.speak(DialogueContext(self.state, recovery="level_up"), title=affection_title(level))
         self.store.log_event("level_up", {"level": level, "title": affection_title(level)})
 

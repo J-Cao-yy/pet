@@ -18,6 +18,7 @@ DEFAULT_MANIFEST: dict[str, list[str]] = {
     "climb_wall_right": ["climb_wall_right.png", "climb_wall_right-1.png"],
     "walk_ceiling": ["walk_ceiling.png", "walk_ceiling-1.png"],
     "chase_mouse": ["chase_mouse.png"],
+    "level_up": ["level_up.png"], "refuse": ["refuse.png"],
     "wipe_mouth": ["wipe mouth.png"],
 }
 
@@ -27,6 +28,8 @@ ACTION_FALLBACKS: dict[str, tuple[str, ...]] = {
     "thrown": ("thrown", "click", "idle"),
     "dragged": ("dragged", "climb", "idle"),
     "chase_mouse": ("chase_mouse", "walk_left", "idle"),
+    "level_up": ("level_up", "happy", "idle"),
+    "refuse": ("refuse", "click", "idle"),
     # Climbing (see docs/CLIMBING_DESIGN.md). There is no climb-wall or
     # ceiling-walk art yet, and the design deliberately ships the behaviour
     # first: these chains keep the pet animated with an existing frame instead

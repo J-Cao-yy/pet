@@ -1,24 +1,25 @@
 """Sound effects behind a swappable player.
 
-Nothing here makes noise yet: the only implementation is
-:class:`SilentPlayer`. Shipping the empty shell first is deliberate - the call
-sites and the on/off switch exist now, so adding a real backend later is one
-class and zero call-site churn. ``winsound`` (stdlib; WAV only, no volume, no
-stop), ``pygame.mixer`` and a file-based player all fit this protocol.
-
-Keys are **semantic** (``feed`` / ``level_up``), never file names: the mapping
-from key to file belongs to whichever backend eventually lands, and that keeps
-an asset reshuffle from touching game logic.
+Two implementations live here: :class:`SilentPlayer` (records what *would*
+play; the default and the non-Windows fallback) and :class:`WinsoundPlayer`
+(Windows stdlib ``winsound``, WAV files under ``assets/sounds/``). The call
+sites and the on/off switch predate both, so a backend swap never touches game
+logic. Keys are **semantic** (``feed`` / ``level_up``), never file names: the
+key-to-file mapping belongs to the backend, which keeps an asset reshuffle
+from touching call sites.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Protocol
 
 __all__ = [
     "SOUND_KEYS",
     "SilentPlayer",
     "SoundPlayer",
+    "WinsoundPlayer",
+    "make_sound_player",
     "sound_for_group",
     "sound_for_refusal",
 ]
@@ -81,3 +82,35 @@ def sound_for_group(group: str | None) -> str | None:
 def sound_for_refusal() -> str:
     """All three refusals share one sound; they are distinguished by dialogue."""
     return "refuse"
+
+
+class WinsoundPlayer:
+    """Plays ``<sound_dir>/<key>.wav`` through ``winsound`` (Windows only).
+
+    ``SND_ASYNC`` keeps the UI thread free; a missing file or a missing
+    ``winsound`` module is skipped silently — sound effects are decoration and
+    must never take the pet down.
+    """
+
+    def __init__(self, sound_dir: Path) -> None:
+        self.sound_dir = Path(sound_dir)
+
+    def path_for(self, key: str) -> Path:
+        return self.sound_dir / f"{key}.wav"
+
+    def play(self, key: str) -> None:
+        import winsound  # imported lazily so non-Windows never pays for it
+
+        path = self.path_for(key)
+        if not path.is_file():
+            return
+        winsound.PlaySound(str(path), winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+
+
+def make_sound_player(sound_dir: Path) -> SilentPlayer | WinsoundPlayer:
+    """Pick the best available player: winsound on Windows, silent elsewhere."""
+    try:
+        import winsound  # noqa: F401
+    except ImportError:
+        return SilentPlayer()
+    return WinsoundPlayer(sound_dir)

@@ -41,3 +41,59 @@ def test_unknown_group_has_no_sound():
 
 def test_refusal_sound_is_a_real_key():
     assert sound_for_refusal() in SOUND_KEYS
+
+
+# -- winsound backend -------------------------------------------------------
+
+
+class _FakeWinsound:
+    """Records PlaySound calls so tests can assert what *would* beep."""
+
+    calls: list[str] = []
+
+
+def _install_fake_winsound(monkeypatch):
+    import sys
+    import types
+
+    fake = types.ModuleType("winsound")
+    fake.SND_ASYNC = 0x0001
+    fake.SND_NODEFAULT = 0x0002
+    fake.PlaySound = lambda *args: _FakeWinsound.calls.append(args)
+    monkeypatch.setitem(sys.modules, "winsound", fake)
+
+
+def test_winsound_player_plays_the_keyed_file(tmp_path, monkeypatch):
+    _install_fake_winsound(monkeypatch)
+    _FakeWinsound.calls.clear()
+    (tmp_path / "click.wav").write_bytes(b"RIFF")
+    from betty_pet.audio import WinsoundPlayer
+
+    player = WinsoundPlayer(tmp_path)
+    player.play("click")
+    assert len(_FakeWinsound.calls) == 1
+    assert _FakeWinsound.calls[0][0].endswith("click.wav")
+
+
+def test_winsound_player_skips_missing_files(tmp_path, monkeypatch):
+    _install_fake_winsound(monkeypatch)
+    _FakeWinsound.calls.clear()
+    from betty_pet.audio import WinsoundPlayer
+
+    WinsoundPlayer(tmp_path).play("nope")  # must not raise, must not play
+    assert _FakeWinsound.calls == []
+
+
+def test_make_sound_player_prefers_winsound_when_available(tmp_path, monkeypatch):
+    _install_fake_winsound(monkeypatch)
+    from betty_pet.audio import WinsoundPlayer, make_sound_player
+
+    assert isinstance(make_sound_player(tmp_path), WinsoundPlayer)
+
+
+def test_make_sound_player_falls_back_to_silent_without_winsound(tmp_path, monkeypatch):
+    import sys
+    from betty_pet.audio import SilentPlayer, make_sound_player
+
+    monkeypatch.setitem(sys.modules, "winsound", None)  # forces ImportError
+    assert isinstance(make_sound_player(tmp_path), SilentPlayer)

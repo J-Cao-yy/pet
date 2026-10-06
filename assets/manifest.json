@@ -10,6 +10,7 @@
   "climb_wall_right": ["climb_wall_right.png", "climb_wall_right-1.png"],
   "walk_ceiling": ["walk_ceiling.png", "walk_ceiling-1.png"],
   "chase_mouse": ["chase_mouse.png"],
+  "level_up": ["level_up.png"], "refuse": ["refuse.png"],
   "wipe_mouth": ["wipe mouth.png"]
 }
 
