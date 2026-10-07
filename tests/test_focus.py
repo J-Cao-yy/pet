@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from betty_pet.focus import BREAK, FOCUS, IDLE, FocusTimer, format_mmss
+from betty_pet.focus import (
+    BREAK,
+    FOCUS,
+    IDLE,
+    FocusTimer,
+    format_mmss,
+    summarize_focus_events,
+)
 
 
 # -- format_mmss --------------------------------------------------------------
@@ -265,3 +272,64 @@ def test_completed_sessions_can_be_seeded_from_the_save_file():
     timer.start()
     timer.tick(60_000)
     assert timer.completed_sessions == 8
+
+
+# -- 统计聚合（专注统计展示的数据层） ---------------------------------------
+
+
+def _events(*pairs):
+    """(utc_ts, kind) pairs -> event rows with a placeholder detail."""
+    return [(ts, kind, "{}") for ts, kind in pairs]
+
+
+def test_summary_counts_only_completed_focus_events():
+    from datetime import date
+
+    today = date(2026, 10, 6)
+    rows = _events(
+        ("2026-10-06T01:00:00+00:00", "focus"),
+        ("2026-10-06T05:00:00+00:00", "focus"),
+        ("2026-10-06T06:00:00+00:00", "focus_start"),  # 开始不算完成
+        ("2026-10-05T09:00:00+00:00", "focus"),
+        ("2026-10-05T10:00:00+00:00", "pet"),
+    )
+    summary = summarize_focus_events(rows, today=today, days=7)
+    assert summary.today == 2
+    assert summary.week == 3
+    assert summary.per_day[0] == ("2026-10-06", 2)
+    assert summary.per_day[1] == ("2026-10-05", 1)
+
+
+def test_summary_converts_utc_to_the_local_day():
+    """A 00:30 local (UTC+8) finish is 16:30 UTC the previous day - it must
+    still land on the local today, not the UTC day."""
+    from datetime import date, timedelta, timezone
+
+    summary = summarize_focus_events(
+        _events(("2026-10-05T16:30:00+00:00", "focus")),
+        today=date(2026, 10, 6),
+        days=7,
+        local_tz=timezone(timedelta(hours=8)),
+    )
+    assert summary.today == 1
+    assert summary.per_day[1] == ("2026-10-05", 0)
+
+
+def test_summary_spans_all_days_with_zeros():
+    from datetime import date
+
+    summary = summarize_focus_events([], today=date(2026, 10, 6), days=7)
+    assert len(summary.per_day) == 7
+    assert all(count == 0 for _, count in summary.per_day)
+    assert summary.today == 0 and summary.week == 0
+
+
+def test_summary_skips_malformed_timestamps():
+    from datetime import date
+
+    summary = summarize_focus_events(
+        _events(("不是时间戳", "focus"), ("2026-10-06T02:00:00+00:00", "focus")),
+        today=date(2026, 10, 6),
+        days=3,
+    )
+    assert summary.today == 1

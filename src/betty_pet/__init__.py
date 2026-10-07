@@ -19,7 +19,7 @@ from .desktop import (
     make_probe,
     perch_bounds,
 )
-from .focus import BREAK, FOCUS, IDLE, FocusTimer, format_mmss
+from .focus import BREAK, FOCUS, IDLE, FocusSummary, FocusTimer, format_mmss, summarize_focus_events
 from .items import Item, ItemOutcome, apply_item, default_items, items_by_group
 from .movement import Direction, MovementPlan, MovementPlanner, chase_direction, horizontal_target
 from .petting import (

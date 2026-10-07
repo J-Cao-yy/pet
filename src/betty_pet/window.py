@@ -6,6 +6,7 @@ import random
 import time
 import tkinter as tk
 from dataclasses import replace
+from datetime import date
 from tkinter import Menu, messagebox
 
 from PIL import ImageTk
@@ -20,7 +21,7 @@ from .behavior import (
 )
 from .config import AppConfig
 from .desktop import WindowProbe, WindowRect, make_probe, perch_bounds
-from .focus import FOCUS, FocusTimer, format_mmss
+from .focus import FOCUS, FocusTimer, format_mmss, summarize_focus_events
 from .items import GROUP_LABELS, Item, ItemOutcome, apply_item, default_items, items_by_group
 from .model import PetModel
 from .movement import MovementPlan, MovementPlanner, chase_direction, horizontal_target
@@ -929,6 +930,7 @@ class PetWindow:
             label=f"专注 {self.config.focus_minutes} 分钟", command=self.start_focus
         )
         self.menu.add_command(label="结束专注", command=self.stop_focus)
+        self.menu.add_command(label="专注统计", command=self.show_focus_stats)
         self.menu.add_separator()
         self.menu.add_command(label="状态面板", command=self.show_status)
         self.menu.add_command(label="隐藏到托盘", command=self.hide_pet)
@@ -1465,6 +1467,8 @@ class PetWindow:
             focus_line = f"{label}　{format_mmss(self.focus_timer.remaining_ms())}\n"
         else:
             focus_line = ""
+        focus_today = self.store.daily_count("focus")
+        focus_stats_line = f"专注　　今日 {focus_today} 轮 · 累计 {self.focus_timer.completed_sessions} 轮\n"
         self.status_text.set(
             f"饱腹度　{100 - stats.hunger:5.1f}\n"
             f"心情　　{stats.mood:5.1f}\n"
@@ -1472,6 +1476,7 @@ class PetWindow:
             f"好感度　{self.state.affection:5.1f}（{self.state.title}·{progress}）\n"
             f"{pet_line}"
             f"{focus_line}"
+            f"{focus_stats_line}"
             f"音效　　{'开' if self.sound_enabled else '关'}\n"
             f"位置　　{int(self.motion.x)}, {int(self.motion.y)}（{ground}）"
         )
@@ -1486,6 +1491,31 @@ class PetWindow:
             stamp = ts[11:16] if len(ts) >= 16 else ts
             suffix = detail if detail and detail != "{}" else ""
             lines.append(f"{stamp} {kind} {suffix}".rstrip())
+        self.show_dialog("\n".join(lines))
+
+    def show_focus_stats(self) -> None:
+        """Today / recent days / lifetime, in plain lines fit for a dialog.
+
+        The per-day breakdown comes from the event log, which is pruned to the
+        most recent 500 entries - old days may legitimately read lower than
+        they were. The lifetime total comes from the settings table, which
+        never forgets.
+        """
+        summary = summarize_focus_events(
+            self.store.recent_events(limit=500),
+            today=date.today(),
+            days=7,
+        )
+        lines = [
+            f"今日　　{summary.today} 轮",
+            f"最近 7 天　{summary.week} 轮",
+            f"累计　　{self.focus_timer.completed_sessions} 轮",
+        ]
+        per_day = "　".join(
+            f"{day[5:]} {count}" for day, count in summary.per_day if count
+        )
+        if per_day:
+            lines.append(f"明细　　{per_day}")
         self.show_dialog("\n".join(lines))
 
     def check_assets(self) -> None:

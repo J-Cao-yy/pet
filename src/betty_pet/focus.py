@@ -20,8 +20,17 @@ record that resets on restart is not a record.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 
-__all__ = ["BREAK", "FOCUS", "IDLE", "FocusTimer", "format_mmss"]
+__all__ = [
+    "BREAK",
+    "FOCUS",
+    "IDLE",
+    "FocusSummary",
+    "FocusTimer",
+    "format_mmss",
+    "summarize_focus_events",
+]
 
 FOCUS = "focus"
 BREAK = "break"
@@ -32,6 +41,54 @@ def format_mmss(milliseconds: int) -> str:
     """``mm:ss``, rounded up so a live timer never reads 00:00 while running."""
     seconds = (max(0, int(milliseconds)) + 999) // 1000
     return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+@dataclass(frozen=True)
+class FocusSummary:
+    """Aggregated focus statistics over the last few calendar days.
+
+    ``per_day`` is ordered newest first and always spans exactly ``days``
+    entries (zero included) - a stats view should show quiet days as 0, not
+    paper over them.
+    """
+
+    today: int
+    week: int
+    per_day: tuple[tuple[str, int], ...]
+
+
+def summarize_focus_events(
+    rows,
+    *,
+    today: date,
+    days: int = 7,
+    local_tz=None,
+) -> FocusSummary:
+    """Count completed focus stretches per local day from event-log rows.
+
+    ``rows`` are ``(ts, kind, detail)`` triplets as returned by
+    ``recent_events``; ``ts`` is an ISO timestamp stored in **UTC**, so each
+    one is converted to the local zone (``local_tz`` overrides it for tests)
+    before its day is taken - otherwise a morning focus session lands on the
+    previous day for UTC+8. Only ``kind == "focus"`` counts: starting a run is
+    intent, finishing a stretch is the statistic. Malformed timestamps are
+    skipped, never raised.
+    """
+    counts: dict[str, int] = {}
+    for ts, kind, _detail in rows:
+        if kind != "focus" or not isinstance(ts, str):
+            continue
+        try:
+            day = datetime.fromisoformat(ts).astimezone(local_tz).date().isoformat()
+        except ValueError:
+            continue
+        counts[day] = counts.get(day, 0) + 1
+    per_day: list[tuple[str, int]] = []
+    for offset in range(max(0, days)):
+        day = today - timedelta(days=offset)
+        n = counts.get(day.isoformat(), 0)
+        per_day.append((day.isoformat(), n))
+    return FocusSummary(today=per_day[0][1] if per_day else 0, week=sum(n for _, n in per_day), per_day=tuple(per_day))
 
 
 @dataclass
