@@ -4,6 +4,30 @@
 拖拽、右键菜单、缩放、随机动作、对话气泡、SQLite 存档、按 manifest 管理动画素材、窗口栖息、
 沿墙与天花板攀爬、系统托盘、专注计时和音效（winsound 后端 + 合成占位音）。
 
+## 打包成 exe
+
+单文件打包用 PyInstaller，配置在 `BettyPet.spec`：
+
+```
+python -m venv .venv-build
+.venv-build/Scripts/python -m pip install pillow pyinstaller pywin32
+.venv-build/Scripts/python -m PyInstaller --noconfirm BettyPet.spec
+```
+
+产物是 `dist/BettyPet.exe`（约 23 MB，双击即跑，存档在 `~/.betty_pet/state.db`）。
+三个关键点，都是踩出来的：
+
+- **别在 Anaconda 主环境里直接打包**——numpy/MKL 等包袱会把体积顶到 250 MB+。
+  用干净 venv（venv 复用 Anaconda 的 tkinter，但只装 Pillow / PyInstaller / pywin32）。
+- **素材在打包时预缩放**：源帧是 2048×2048（约 50 MB），`BettyPet.spec` 在构建时把它们
+  缩到 512px（窗口显示约 160px、缩放上限 2.5 倍，512 绰绰有余）再捆绑，否则光素材就 80 MB。
+- **frozen 路径**：`config.PROJECT_ROOT` 在打包态指向 `sys._MEIPASS`（只读资源），数据库
+  路径与 exe 位置无关；`autostart.launch_command()` 打包态直接启动 exe 自身而不是 pythonw。
+
+图标由 `tools/make_icon.py` 从 `assets/stand.png` 生成（`assets/BettyPet.ico`），
+换主形象后重跑一次即可。验证打包是否成功：`BettyPet.exe --check-assets` 退出码 0
+即素材齐全；也可以直接启动看窗口。
+
 ## 交互
 
 | 操作 | 效果 |

@@ -51,8 +51,12 @@ def launch_command(project_root: Path | None = None) -> tuple[str, str]:
     """``(executable, script)`` the launcher will run.
 
     ``pythonw.exe`` is preferred so no console window appears at login.
+    When running from a PyInstaller bundle the executable *is* the pet, so
+    there is no script argument.
     """
     executable = Path(sys.executable)
+    if getattr(sys, "frozen", False):
+        return str(executable), ""
     windowed = executable.with_name("pythonw.exe")
     if windowed.is_file():
         executable = windowed
@@ -63,10 +67,14 @@ def launch_command(project_root: Path | None = None) -> tuple[str, str]:
 def launcher_script(project_root: Path | None = None) -> str:
     """The VBS launcher text. Pure function so it can be asserted in tests."""
     executable, script = launch_command(project_root)
+    if script:
+        run_args = f'""{executable}"" ""{script}""'
+    else:
+        run_args = f'""{executable}""'
     return (
         "' Betty Pet 开机自启启动器（自动生成；删除本文件即可取消）\n"
         "Set shell = CreateObject(\"WScript.Shell\")\n"
-        f'shell.Run """{executable}"" ""{script}""", 0, False\n'
+        f"shell.Run {run_args}, 0, False\n"
     )
 
 

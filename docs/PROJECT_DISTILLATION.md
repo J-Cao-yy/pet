@@ -35,6 +35,7 @@ Betty Pet 是一个运行在 Windows 桌面的轻量级 2D 桌宠原型。它的
 | 悬停反应 | 停留 0.8 秒触发挥手 | `window.py`、`config.py` |
 | 窗口栖息 | 站到前台窗口上沿；随窗口移动/缩放跟随；窗口关闭、最小化或顶到屏幕顶部即掉落回地面 | `desktop.py`、`window.py` |
 | 沿墙 / 天花板攀爬 | 走到屏幕边缘自动抓墙；沿墙爬（墙是 60px 宽的带，可横向挪动、顶到内缘才掉）、翻顶到天花板横穿、下另一侧墙；拖拽/投掷打断。攀爬三向与 fall/thrown/dragged 均有 AI 生成帧 | `physics.py`（`Surface`）、`window.py`、`docs/CLIMBING_DESIGN.md` |
+| 打包 | PyInstaller 单文件 `dist/BettyPet.exe`（约 23 MB）：干净 venv 构建、素材打包时预缩到 512px、frozen 路径走 `sys._MEIPASS`、图标由 `tools/make_icon.py` 生成 | `BettyPet.spec`、`tools/make_icon.py`、`config.py` |
 | 音效 | `SoundPlayer` 抽象 + `WinsoundPlayer` 真后端（Windows 标准库，播 `assets/sounds/<key>.wav`，异步、缺文件静默）；11 个键位各有程序合成的占位音色（`tools/synth_sfx.py` 可重新生成） | `src/betty_pet/audio.py`、`tools/synth_sfx.py` |
 | 系统托盘 | pywin32 自绘图标（零新依赖）；显示/隐藏、跟随鼠标、退出；动作经队列回投主线程 | `src/betty_pet/tray.py` |
 | 开机自启 | `--install-autostart` / `--uninstall-autostart` 写入「启动」文件夹的 `.vbs`（无窗口启动） | `src/betty_pet/autostart.py`、`__main__.py` |
@@ -287,6 +288,7 @@ class StateStore(Protocol):
 - **专注统计**：`focus.py` 新增 `summarize_focus_events()`（纯函数，事件日志按**本地日**聚合——事件时间戳是 UTC，直接取前 10 字符会把本地凌晨记到前一天，必须 `astimezone` 换算；坏时间戳跳过）；状态面板加「专注　今日 n 轮 · 累计 n 轮」，菜单加「专注统计」对话框（今日/最近 7 天每日明细/累计）。测试 172→176。
 - **自主行为精致化 + 调试面板**（琰："不需要我控制她的动作……多一个调试面板"）：①随机防复读——与上次同动作最多重摇 `action_rerolls`（2）次；②深夜打盹——`is_nap_hour()`（跨午夜窗口）+ `nap_hour_chance`（0.4），深夜随机行为有概率直接睡觉并说晚安；③被扔落地反应——`_was_thrown` 标记 + 落地坐下抱怨（dizzy 台词）；④忽略打盹——`neglect_minutes`（5）无人接触自动打盹抱怨，任何用户接触重置，隐藏/专注/攀爬/空中不打扰；⑤调试面板——实时状态 + 规则逐条 ✓/✗ 权重（`describe_rules`）+ 三滑杆直改数值 + 好感+10/随机×1/触发打盹/重置数值 + 每个 manifest 动作一枚播放键。`Scheduler` 加 `time_until_ms()`（Job 记 `due_at`），面板显示忽略倒计时。测试 176→179。
 - **环境坑再确认**：pytest 跑完清理 tmp 目录会撞 shim 的 rmtree 批量删除守卫报 `SystemExit: 1`——测试结果本身有效（看 `pytest_out.txt` 里的 passed 行即可）；连续两天各踩一次。
+- **打包成 exe**（琰："打包成一个可运行的 exe"）：PyInstaller onefile+windowed，产物 `dist/BettyPet.exe` **约 23 MB**。三个必须处理的点：①**Anaconda 主环境直接打包 259 MB**（numpy/MKL 全进去了），干净 venv（复用 Anaconda 的 tkinter 但只装 Pillow/PyInstaller/pywin32）降到 103 MB；②**素材才是真正的大头**——27 张 2048px 源帧约 80 MB，spec 里构建时预缩到 512px（显示约 160px、缩放上限 2.5 倍）后降到 23 MB；③frozen 路径：`config.PROJECT_ROOT` 打包态指向 `sys._MEIPASS`，`autostart.launch_command()` 打包态返回 `(exe, "")`（脚本参数为空）。验证：`BettyPet.exe --check-assets` 退出码 0 + 真启动 6 秒进程存活。spec 执行环境**没有 `BUILDPATH` 全局**，用 `SPECPATH` 推导；spec 里的代码在构建期运行，别写复杂逻辑。图标 `tools/make_icon.py`（stand.png → alpha 裁切 → 多尺寸 ico）。
 - 测试现为 **168 项**；本轮每个提交都用 `git archive` 独立验证过，攀爬两个提交已推送。
 - 碰撞边界只有主屏幕上下左右；任务栏高度靠 `floor_offset_px` 假设，多显示器未处理。
 - 物理动词缺专属素材（`fall` / `thrown` / `dragged` 三张 PNG），目前走回退链。

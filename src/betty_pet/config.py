@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -7,7 +8,12 @@ from .physics import PhysicsConfig
 from .store import DEFAULT_DB_PATH
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# Frozen (PyInstaller): read-only resources live in the extraction dir that
+# ``--add-data`` populated; source runs resolve the repo root two levels up.
+if getattr(sys, "frozen", False):
+    PROJECT_ROOT = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass

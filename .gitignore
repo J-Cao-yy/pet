@@ -9,3 +9,7 @@ build/
 .idea/
 
 pytest_out.txt
+build/
+dist/
+.venv-build/
+build_log*.txt
