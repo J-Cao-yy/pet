@@ -21,6 +21,16 @@ class AppConfig:
     max_scale: float = 2.5
     random_actions: bool = True
     idle_delay_ms: tuple[int, int] = (6_000, 15_000)
+    # 自主行为的"精致化"参数（见 window.py 的 _random_action / _neglect_nap）：
+    # 随机选到与上次相同的动作时最多重摇几次，避免"连环睡觉"这种复读感；
+    # 无人互动超过 neglect_minutes 就自己打个小盹抱怨一句；
+    # nap_hour_start..end（可跨午夜）是深夜犯困时段，该时段随机行为有
+    # nap_hour_chance 的概率直接变成打盹。
+    action_rerolls: int = 2
+    neglect_minutes: float = 5.0
+    nap_hour_start: int = 23
+    nap_hour_end: int = 7
+    nap_hour_chance: float = 0.4
     action_duration_ms: int = 1_200
     dialog_duration_ms: int = 1_500
     frame_interval_ms: int = 180

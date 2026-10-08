@@ -44,6 +44,7 @@ class Job:
     priority: int = 0
     group: str = "default"
     handle: object = None
+    due_at: float | None = None
 
 
 class Scheduler:
@@ -61,6 +62,17 @@ class Scheduler:
 
     def is_pending(self, name: str) -> bool:
         return name in self._jobs
+
+    def time_until_ms(self, name: str) -> float | None:
+        """Milliseconds until ``name`` fires, or ``None`` if not pending.
+
+        The debug panel shows countdowns with this; it reads state only and
+        never touches the queue.
+        """
+        job = self._jobs.get(name)
+        if job is None or job.due_at is None:
+            return None
+        return max(0.0, (job.due_at - self._clock.now()) * 1000.0)
 
     def cooldown_remaining_ms(self, name: str) -> float:
         remaining = self._cooldown_until.get(name, 0.0) - self._clock.now()
@@ -88,7 +100,14 @@ class Scheduler:
                 return False
             self.cancel(name)
         handle = self._clock.call_later(delay_ms, lambda: self._fire(name))
-        self._jobs[name] = Job(name=name, callback=callback, priority=priority, group=group, handle=handle)
+        self._jobs[name] = Job(
+            name=name,
+            callback=callback,
+            priority=priority,
+            group=group,
+            handle=handle,
+            due_at=self._clock.now() + delay_ms / 1000.0,
+        )
         if cooldown_ms > 0:
             self._cooldown_until[name] = self._clock.now() + cooldown_ms / 1000.0
         return True

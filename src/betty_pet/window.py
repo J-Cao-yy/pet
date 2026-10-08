@@ -14,10 +14,13 @@ from PIL import ImageTk
 from .assets import AssetCatalog
 from .audio import SilentPlayer, make_sound_player, sound_for_group, sound_for_refusal
 from .behavior import (
+    BehaviorAction,
     DialogueContext,
     TemplateLanguageProvider,
     ThresholdBehaviorEngine,
     default_behavior_rules,
+    describe_rules,
+    is_nap_hour,
 )
 from .config import AppConfig
 from .desktop import WindowProbe, WindowRect, make_probe, perch_bounds
@@ -129,6 +132,15 @@ class PetWindow:
         # affection cooldown has something to measure. None = untouched this run.
         self._last_petting: float | None = None
 
+        # Autonomous-behaviour polish: remember the last random pick so the
+        # next roll avoids an immediate repeat, remember that the pet was
+        # *thrown* (not merely dropped) so the landing can react, and a lazy
+        # debug panel that is only built the first time it is opened.
+        self._last_random: str | None = None
+        self._was_thrown = False
+        self.debug_window: tk.Toplevel | None = None
+        self.debug_text: tk.StringVar | None = None
+
         # Window perching: the probe reports the foreground window, the pet
         # stands on its top edge. ``_last_window`` remembers the window the user
         # was looking at, because interacting with the pet steals focus.
@@ -162,6 +174,9 @@ class PetWindow:
                 "sleep": ("贝蒂有点困了。",),
                 "hungry": ("贝蒂肚子饿了。",),
                 "tired": ("休息一下吧。",),
+                "dizzy": ("摔得好晕……别乱扔我啦。", "呜，屁股着地了。", "你礼貌吗？"),
+                "neglect": ("贝蒂自己待着有点无聊……", "哼，都不理我。", "（小声）有人吗……"),
+                "nap_time": ("夜深了，好困……", "（打哈欠）这个点该睡了。", "晚睡的小孩子长不高哦。"),
                 "happy": ("今天心情不错！",),
                 "greet": ("你好呀。",),
                 "walk": ("出去走走。",),
@@ -332,6 +347,7 @@ class PetWindow:
 
         self._last_petting = now
         self.store.bump_daily(DAILY_KEY)
+        self._arm_neglect()
         before = self.state.level
         self.state.gain_affection(decision.affection)
         self.store.log_event(
@@ -933,6 +949,7 @@ class PetWindow:
         self.menu.add_command(label="专注统计", command=self.show_focus_stats)
         self.menu.add_separator()
         self.menu.add_command(label="状态面板", command=self.show_status)
+        self.menu.add_command(label="调试面板", command=self.show_debug)
         self.menu.add_command(label="隐藏到托盘", command=self.hide_pet)
         self.menu.add_separator()
         self.menu.add_command(label="放大", command=lambda: self.change_scale(0.1))
@@ -997,6 +1014,7 @@ class PetWindow:
         if self.config.persist:
             self.scheduler.repeat("autosave", self.config.autosave_interval_ms, self._autosave, group="persistence")
         self.schedule_random_action()
+        self._arm_neglect()
 
     def _animate(self) -> None:
         frames = self.images.get(self.model.current.name) or self.images[IDLE]
@@ -1032,6 +1050,7 @@ class PetWindow:
     def on_mouse_down(self, event: tk.Event) -> None:
         self.drag_origin, self.dragged = (event.x, event.y), False
         self.scheduler.cancel_group("hover")
+        self._arm_neglect()
         self._stop_walk()
         self._stop_physics()
         self.drag_tracker.clear()
@@ -1066,6 +1085,7 @@ class PetWindow:
             self._release_throw()
             return
         self.play("click", priority=PRIORITY_USER)
+        self._arm_neglect()
         handled = self._record_petting(CLICK)
         self._play_sound("click")
         if handled:
@@ -1082,6 +1102,7 @@ class PetWindow:
             self.motion, vx=vx, vy=vy, grounded=False, airborne_time=0.0, surface=Surface.FLOOR
         )
         verb = "thrown" if math.hypot(vx, vy) >= self.config.physics.throw_threshold else "fall"
+        self._was_thrown = verb == "thrown"
         self._play_priority = PRIORITY_IDLE
         self.play(verb, priority=PRIORITY_USER)
         self._ensure_physics()
@@ -1251,7 +1272,14 @@ class PetWindow:
             return
         if events.landed:
             self._play_priority = PRIORITY_IDLE
-            self.play(IDLE)
+            if self._was_thrown:
+                # A *throw* ends with a hard landing worth reacting to; a
+                # gentle drop just goes back to idle.
+                self._was_thrown = False
+                self.play("sit", priority=PRIORITY_USER)
+                self.speak(DialogueContext(self.state, recovery="dizzy"))
+            else:
+                self.play(IDLE)
             self._play_sound("land")
             return
         if events.hit_wall and self._grip_adjacent_wall(events):
@@ -1320,6 +1348,37 @@ class PetWindow:
             group="behavior",
         )
 
+    # -- autonomous behaviour: neglect nap & night doze ----------------------
+
+    def _arm_neglect(self) -> None:
+        """Reset the "ignored for too long" timer - call on any user contact.
+
+        The callback itself re-arms, so one complaint per quiet stretch: the
+        pet naps, grumbles once, then waits again. Random actions do **not**
+        re-arm this - her entertaining herself is not the user paying
+        attention.
+        """
+        self.scheduler.cancel_group("neglect")
+        self.scheduler.schedule(
+            "neglect",
+            int(self.config.neglect_minutes * 60_000),
+            self._neglect_nap,
+            priority=PRIORITY_RANDOM,
+            group="neglect",
+        )
+
+    def _neglect_nap(self) -> None:
+        self._arm_neglect()
+        if (
+            self.hidden
+            or self.focus_timer.active
+            or self.surface.clinging
+            or not self.motion.grounded
+        ):
+            return
+        self.play("sleep", priority=PRIORITY_RANDOM)
+        self.speak(DialogueContext(self.state, recovery="neglect"))
+
     def _random_action(self) -> None:
         self.state.update_elapsed()
         self._refresh_status()
@@ -1331,12 +1390,48 @@ class PetWindow:
         if not self.motion.grounded:
             self.schedule_random_action()
             return
-        action = self.behavior_engine.choose(self.state)
+        if self._maybe_nap_for_night():
+            self.schedule_random_action()
+            return
+        action = self._choose_varied_action()
         chasing = self._chase_velocity() is not None
         if not (chasing and action.animation_name in WALK_ACTIONS):
             self.play(action.animation_name)
         self.speak(DialogueContext(self.state, action=action))
         self.schedule_random_action()
+
+    def _choose_varied_action(self) -> BehaviorAction:
+        """Roll the engine, rerolling a couple of times to break repeats.
+
+        Independent weighted draws can produce "sleep, sleep, sleep" streaks
+        that read as a glitch; re-rolling against the last pick keeps the
+        randomness feeling intentional without making it deterministic.
+        """
+        action = self.behavior_engine.choose(self.state)
+        for _ in range(max(0, self.config.action_rerolls)):
+            if action.animation_name != self._last_random:
+                break
+            action = self.behavior_engine.choose(self.state)
+        self._last_random = action.animation_name
+        return action
+
+    def _maybe_nap_for_night(self) -> bool:
+        """Late-night hours bias the pet towards a sleepy doze.
+
+        Returns True when a nap was played (the caller then just reschedules).
+        """
+        if not is_nap_hour(
+            time.localtime().tm_hour,
+            start=self.config.nap_hour_start,
+            end=self.config.nap_hour_end,
+        ):
+            return False
+        if random.random() >= self.config.nap_hour_chance:
+            return False
+        self.play("sleep", priority=PRIORITY_RANDOM)
+        self.speak(DialogueContext(self.state, recovery="nap_time"))
+        self._last_random = "sleep"
+        return True
 
     def request_item(self, item_id: str) -> bool:
         """Menu entry point.
@@ -1347,6 +1442,7 @@ class PetWindow:
         item = self.items.get(item_id)
         if item is None:
             return False
+        self._arm_neglect()
         used_today = self.store.daily_count(item.id)
         refusal = item.refusal(self.state, used_today)
         if refusal is not None:
@@ -1425,6 +1521,123 @@ class PetWindow:
     def hide_status(self) -> None:
         self.scheduler.cancel_group("status")
         self.status_window.withdraw()
+
+    # -- debug panel ---------------------------------------------------------
+
+    def show_debug(self) -> None:
+        """Open the behaviour debug panel (built lazily on first open).
+
+        This is the tuning bench for the autonomy work: live state, the rule
+        table with match marks, sliders to force needs, and one button per
+        manifest action so any animation is one click away.
+        """
+        if self.debug_window is None:
+            self._build_debug_panel()
+        assert self.debug_window is not None and self.debug_text is not None
+        self._refresh_debug()
+        self.debug_window.deiconify()
+        self.debug_window.lift()
+        self.scheduler.repeat("debug_refresh", 1_000, self._refresh_debug, group="debug")
+
+    def hide_debug(self) -> None:
+        self.scheduler.cancel_group("debug")
+        if self.debug_window is not None:
+            self.debug_window.withdraw()
+
+    def _build_debug_panel(self) -> None:
+        window = tk.Toplevel(self.root)
+        window.title("调试面板")
+        window.attributes("-topmost", True)
+        window.resizable(False, False)
+        window.protocol("WM_DELETE_WINDOW", self.hide_debug)
+        self.debug_window = window
+
+        self.debug_text = tk.StringVar(value="")
+        tk.Label(
+            window, textvariable=self.debug_text, justify="left", anchor="nw",
+            font=("Microsoft YaHei UI", 9), fg="#333333", bg="white",
+            relief="solid", bd=1, padx=10, pady=8, width=46,
+        ).pack(fill="both", expand=True, padx=8, pady=(8, 4))
+
+        controls = tk.Frame(window, bg="white")
+        controls.pack(fill="x", padx=8, pady=4)
+        stats = self.state.stats
+        for label, attr in (("饱腹", "hunger"), ("心情", "mood"), ("精力", "energy")):
+            row = ("hunger", "mood", "energy").index(attr)
+            tk.Label(controls, text=label, font=("Microsoft YaHei UI", 9), bg="white").grid(
+                row=row, column=0, sticky="w"
+            )
+            scale = tk.Scale(
+                controls, from_=0, to=100, orient="horizontal", length=180,
+                command=lambda value, name=attr: self._debug_set_stat(name, value),
+            )
+            scale.grid(row=row, column=1, sticky="we")
+            scale.set(getattr(stats, attr))
+        tk.Button(controls, text="好感度 +10", command=self._debug_affection).grid(row=3, column=0, pady=4)
+        debug_buttons = tk.Frame(controls, bg="white")
+        debug_buttons.grid(row=3, column=1, sticky="w")
+        tk.Button(debug_buttons, text="随机行为 ×1", command=self._debug_random).pack(side="left")
+        tk.Button(debug_buttons, text="触发打盹", command=self._neglect_nap).pack(side="left", padx=4)
+        tk.Button(debug_buttons, text="重置数值", command=self._debug_reset_stats).pack(side="left")
+
+        actions = tk.LabelFrame(window, text="播放动作", font=("Microsoft YaHei UI", 9), bg="white")
+        actions.pack(fill="both", padx=8, pady=(2, 8))
+        names = sorted(self.catalog.actions())
+        columns = 4
+        for index, name in enumerate(names):
+            tk.Button(
+                actions, text=name, font=("Microsoft YaHei UI", 8), width=12,
+                command=lambda n=name: self._debug_play(n),
+            ).grid(row=index // columns, column=index % columns, sticky="we", padx=2, pady=2)
+
+    def _refresh_debug(self) -> None:
+        if self.debug_text is None:
+            return
+        stats = self.state.stats
+        phase = (
+            f"{self.focus_timer.phase} {format_mmss(self.focus_timer.remaining_ms())}"
+            if self.focus_timer.active
+            else "idle"
+        )
+        neglect_ms = self.scheduler.time_until_ms("neglect")
+        neglect = (
+            f"{neglect_ms / 1000:.0f}s 后打盹" if neglect_ms is not None else "未装填"
+        )
+        lines = [
+            f"动作　{self.model.current.name}　位置　{int(self.motion.x)},{int(self.motion.y)}"
+            f"　{'贴' if self.surface.clinging else '地' if self.motion.grounded else '空'}",
+            f"饱腹 {100 - stats.hunger:5.1f}　心情 {stats.mood:5.1f}　精力 {stats.energy:5.1f}",
+            f"好感 {self.state.affection:6.1f}（{self.state.title}）　专注 {phase}",
+            f"上次随机 {self._last_random or '-'}　忽略计时 {neglect}"
+            f"　深夜窗 {self.config.nap_hour_start}-{self.config.nap_hour_end}",
+            "规则（✓=当前会命中）:",
+            *describe_rules(self.behavior_engine.rules, self.state),
+        ]
+        self.debug_text.set("\n".join(lines))
+
+    def _debug_set_stat(self, attr: str, value: str) -> None:
+        setattr(self.state.stats, attr, float(value))
+        self.state.stats.clamp()
+        self._refresh_debug()
+
+    def _debug_reset_stats(self) -> None:
+        self.state.stats.hunger = 20.0
+        self.state.stats.mood = 70.0
+        self.state.stats.energy = 80.0
+        self._refresh_debug()
+
+    def _debug_affection(self) -> None:
+        before = self.state.level
+        self.state.gain_affection(10.0)
+        self._refresh_status()
+        if self.state.level > before:
+            self._announce_level_up(self.state.level)
+
+    def _debug_random(self) -> None:
+        self._random_action()
+
+    def _debug_play(self, name: str) -> None:
+        self.play(name, priority=PRIORITY_USER)
 
     def _stats_snapshot(self) -> dict[str, float]:
         stats = self.state.stats

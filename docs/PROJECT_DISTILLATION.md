@@ -16,7 +16,9 @@ Betty Pet 是一个运行在 Windows 桌面的轻量级 2D 桌宠原型。它的
 | 透明置顶桌宠窗口 | 已支持 Windows 透明色、置顶、无边框 | `src/betty_pet/window.py` |
 | 拖拽与点击交互 | 左键拖拽；点击触发 click 动作和随机气泡 | `window.py` |
 | 动作播放 | 一次性动作与循环动作；固定 180ms 帧间隔 | `src/betty_pet/model.py`、`window.py` |
-| 随机行为 | 6~15 秒随机选择非 idle/click 动作 | `window.py`、`src/betty_pet/config.py` |
+| 随机行为 | 6~15 秒按阈值规则加权随机；与上次相同最多重摇 2 次；深夜时段（默认 23-7 点）有概率直接打盹；被扔出去落地会坐下抱怨 | `window.py`（`_random_action`）、`src/betty_pet/behavior.py`、`src/betty_pet/config.py` |
+| 陪伴缺失反应 | 无人互动满 `neglect_minutes`（默认 5 分钟）自动打盹并抱怨一句；任何用户接触重置计时；隐藏/专注/攀爬/空中不打扰 | `window.py`（`_arm_neglect`） |
+| 调试面板 | 菜单「调试面板」：实时状态、行为规则逐条 ✓/✗ 与权重、饱腹/心情/精力滑杆、好感 +10、随机行为/触发打盹/重置数值按钮、每个 manifest 动作一枚播放按钮 | `window.py`（`show_debug`）、`src/betty_pet/behavior.py`（`describe_rules`） |
 | 素材管理 | `manifest.json` 声明动作到 PNG 帧的映射，启动时校验缺失文件 | `src/betty_pet/assets.py`、`assets/manifest.json` |
 | 缩放 | 0.3~2.5 倍，滚轮或右键菜单调整 | `config.py`、`window.py` |
 | 对话展示 | 顶部无边框白色气泡，按时自动隐藏 | `window.py`、`config.py` |
@@ -258,7 +260,7 @@ class StateStore(Protocol):
 - `LanguageProvider` 目前只有模板实现，尚未接入 Ollama/llama.cpp 等本地模型。
 - 道具没有数量、没有货币、没有解锁条件。刻意如此：没有"打工赚钱→买道具"的循环时，数量只会变成一个再也回不来的数字，读起来像 bug 而不是机制。
 - 好感度现在有三个来源（道具、坐满专注、点按/抚摸轻交互），但"长时间陪伴"这类被动积累还没有。
-- 专注已支持多轮循环、长休息与累计轮次落库；还没有"今日专注汇总"这类统计展示，轮次/长休息也不能在菜单里临时改（要改得动 `config` 或 CLI）。
+- 专注已支持多轮循环、长休息与累计轮次落库，"今日/最近 7 天/累计"统计也已在状态面板与「专注统计」对话框展示；轮次/长休息还不能在菜单里临时改（要改得动 `config` 或 CLI）。
 - 音效已出声（winsound 后端 + 11 个合成占位音色），但占位音是程序合成的"电子味"，真素材（录音或更好的音色库）仍待替换；`winsound` 不支持音量与淡出，想要这些得换 `pygame.mixer`。
 - 托盘用的是系统默认图标，没有自己的 `.ico`；托盘菜单里还没有「跳到窗口」这类入口。
 - 栖息只认主屏幕边界，且拒绝最大化窗口；多显示器未处理。开机自启的命令写好了但**没执行过**，真机开机验证待做。
@@ -282,6 +284,9 @@ class StateStore(Protocol):
   AI 流水线；`_announce_level_up()` 与三处拒绝（道具满/冷却、抚摸超限）现在都先做动作再说话。
   回退链 `level_up→happy→idle`、`refuse→click→idle`。
 - 测试 168→172 项（新增 winsound 后端 4 项：键到文件映射、缺文件跳过、工厂选择、无 winsound 回退）。
+- **专注统计**：`focus.py` 新增 `summarize_focus_events()`（纯函数，事件日志按**本地日**聚合——事件时间戳是 UTC，直接取前 10 字符会把本地凌晨记到前一天，必须 `astimezone` 换算；坏时间戳跳过）；状态面板加「专注　今日 n 轮 · 累计 n 轮」，菜单加「专注统计」对话框（今日/最近 7 天每日明细/累计）。测试 172→176。
+- **自主行为精致化 + 调试面板**（琰："不需要我控制她的动作……多一个调试面板"）：①随机防复读——与上次同动作最多重摇 `action_rerolls`（2）次；②深夜打盹——`is_nap_hour()`（跨午夜窗口）+ `nap_hour_chance`（0.4），深夜随机行为有概率直接睡觉并说晚安；③被扔落地反应——`_was_thrown` 标记 + 落地坐下抱怨（dizzy 台词）；④忽略打盹——`neglect_minutes`（5）无人接触自动打盹抱怨，任何用户接触重置，隐藏/专注/攀爬/空中不打扰；⑤调试面板——实时状态 + 规则逐条 ✓/✗ 权重（`describe_rules`）+ 三滑杆直改数值 + 好感+10/随机×1/触发打盹/重置数值 + 每个 manifest 动作一枚播放键。`Scheduler` 加 `time_until_ms()`（Job 记 `due_at`），面板显示忽略倒计时。测试 176→179。
+- **环境坑再确认**：pytest 跑完清理 tmp 目录会撞 shim 的 rmtree 批量删除守卫报 `SystemExit: 1`——测试结果本身有效（看 `pytest_out.txt` 里的 passed 行即可）；连续两天各踩一次。
 - 测试现为 **168 项**；本轮每个提交都用 `git archive` 独立验证过，攀爬两个提交已推送。
 - 碰撞边界只有主屏幕上下左右；任务栏高度靠 `floor_offset_px` 假设，多显示器未处理。
 - 物理动词缺专属素材（`fall` / `thrown` / `dragged` 三张 PNG），目前走回退链。

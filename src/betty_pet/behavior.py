@@ -91,6 +91,47 @@ def default_behavior_rules() -> tuple[BehaviorRule, ...]:
     )
 
 
+def describe_rules(rules, state: PetState) -> list[str]:
+    """One line per rule showing its conditions and whether they match now.
+
+    This is the debug panel's window into "why did she do that": conditions
+    render compactly (``energy<=20``), ``✓``/`✗` marks the match, and the
+    weight is shown so relative likelihood is visible at a glance.
+    """
+    lines: list[str] = []
+    for rule in rules:
+        conditions = []
+        if rule.hunger_at_least is not None:
+            conditions.append(f"hunger>={rule.hunger_at_least:g}")
+        if rule.hunger_at_most is not None:
+            conditions.append(f"hunger<={rule.hunger_at_most:g}")
+        if rule.mood_at_least is not None:
+            conditions.append(f"mood>={rule.mood_at_least:g}")
+        if rule.mood_at_most is not None:
+            conditions.append(f"mood<={rule.mood_at_most:g}")
+        if rule.energy_at_least is not None:
+            conditions.append(f"energy>={rule.energy_at_least:g}")
+        if rule.energy_at_most is not None:
+            conditions.append(f"energy<={rule.energy_at_most:g}")
+        mark = "✓" if rule.matches(state) else "✗"
+        action = rule.action.animation_name
+        lines.append(f"{mark} {action}({' & '.join(conditions) or 'always'}) w={rule.weight:g}")
+    return lines
+
+
+def is_nap_hour(hour: int, *, start: int, end: int) -> bool:
+    """True inside the overnight window (``start``..``end``, wraps midnight).
+
+    23..7 means "from 23:00 to 06:59"; a window where ``start == end`` is
+    always-on, which keeps the edge case explicit instead of surprising.
+    """
+    if start == end:
+        return True
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
 @dataclass(frozen=True)
 class DialogueContext:
     state: PetState
