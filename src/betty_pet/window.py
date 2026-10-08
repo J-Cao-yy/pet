@@ -103,7 +103,7 @@ class PetWindow:
         self.dragged = False
         self.walk_direction: str | None = None
         self.walk_remaining = 0.0
-        self.walk_speed = 150.0
+        self.walk_speed = 125.0
         self.walk_will_hit_wall = False
         self.follow_mouse = self.store.get_setting("follow_mouse") == "1"
         # What the pet does when nothing else is happening. Focus sessions swap

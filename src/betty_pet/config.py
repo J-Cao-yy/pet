@@ -39,7 +39,10 @@ class AppConfig:
     nap_hour_chance: float = 0.4
     action_duration_ms: int = 1_200
     dialog_duration_ms: int = 1_500
-    frame_interval_ms: int = 180
+    # 240ms/帧比 180ms 慢 25%，动作更从容；帧驱动是固定间隔的 Tk after 定时器，
+    # 这个量级不会产生卡顿感。行走步进速度（movement.MovementPlanner）随之从
+    # 150px/s 降到 125px/s，避免"帧慢了、脚在滑"的分离感。
+    frame_interval_ms: int = 240
     messages: tuple[str, ...] = (
         "不要随便打扰贝蒂哦。", "有事就说，贝蒂很忙的。", "喵？", "你这家伙。", "贝蒂才不孤单呢。",
     )

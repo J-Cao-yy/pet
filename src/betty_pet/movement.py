@@ -18,7 +18,7 @@ Direction = Literal["left", "right"]
 class MovementPlan:
     direction: Direction
     distance: int
-    speed_px: int = 6
+    speed_px: int = 5
     interval_ms: int = 40
     wall_action: str = "climb"
 
@@ -30,7 +30,7 @@ class MovementPlanner:
         self,
         distance_range: tuple[int, int] = (80, 240),
         *,
-        speed_px: int = 6,
+        speed_px: int = 5,
         interval_ms: int = 40,
         rng: random.Random | None = None,
     ) -> None:
